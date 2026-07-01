@@ -21,6 +21,11 @@ pub enum Cmd {
         /// Path to the file to store.
         path: String,
     },
+    /// Store every IPLD block of a CARv1 so its root content CID resolves.
+    StoreCar {
+        /// Path to the `.car` file (CARv1, sha2-256 blocks; e.g. `ipfs dag export`).
+        path: String,
+    },
     /// Show authorization / quota for an account.
     Status {
         /// SS58 address to inspect (defaults to the signer's account).
@@ -38,6 +43,7 @@ pub async fn run(
     match cmd {
         Cmd::Status { address } => status(env, address, mnemonic, derivation_path).await,
         Cmd::Store { path } => store(env, path, mnemonic, derivation_path).await,
+        Cmd::StoreCar { path } => store_car(env, path, mnemonic, derivation_path).await,
     }
 }
 
@@ -109,68 +115,83 @@ async fn store(
     }
 
     let cid = chain::raw_cid(&data);
-    let content_hash = chain::content_hash(&data);
     let gateway_url = format!("{}/ipfs/{cid}", env.ipfs_gateway);
 
     let client = OnlineClient::<BulletinConfig>::from_url(env.bulletin_rpc)
         .await
         .with_context(|| format!("connecting to Bulletin RPC {}", env.bulletin_rpc))?;
-
-    let location_address = bulletin::storage()
-        .transaction_storage()
-        .transaction_by_content_hash();
-
-    let at = client.at_current_block().await?;
-    let existing = at
-        .storage()
-        .try_fetch(location_address, (content_hash,))
-        .await
-        .context("reading TransactionStorage.TransactionByContentHash")?;
-    if let Some(value) = existing {
-        let (block, index) = value.decode().context("decoding stored location")?;
-        println!("already stored at block #{block} index {index}");
-        println!("cid      {cid}");
-        println!("gateway  {gateway_url}");
-        return Ok(());
-    }
-    drop(at);
-
     let signer = resolve_signer(mnemonic, derivation_path)?;
-    let cid_config =
-        bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::CidConfig {
-            codec: 0x55,
-            hashing:
-                bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::HashingAlgorithm::Sha2_256,
-        };
-    let call = bulletin::tx()
-        .transaction_storage()
-        .store_with_cid_config(cid_config, data);
 
-    client
-        .tx()
-        .await?
-        .sign_and_submit_then_watch_default(&call, &signer)
-        .await
-        .context("submitting store_with_cid_config")?
-        .wait_for_finalized_success()
-        .await
-        .context("store_with_cid_config did not finalize successfully")?;
-
-    let location_address = bulletin::storage()
-        .transaction_storage()
-        .transaction_by_content_hash();
-    let at = client.at_current_block().await?;
-    let (block, index) = at
-        .storage()
-        .try_fetch(location_address, (content_hash,))
-        .await
-        .context("re-reading TransactionByContentHash after store")?
-        .context("store finalized but TransactionByContentHash is still empty")?
-        .decode()
-        .context("decoding stored location")?;
-
-    println!("stored at block #{block} index {index}");
+    match chain::store_block(&client, &signer, 0x55, &data).await? {
+        chain::StoreOutcome::AlreadyPresent { block, index } => {
+            println!("already stored at block #{block} index {index}");
+        }
+        chain::StoreOutcome::Stored { block, index } => {
+            println!("stored at block #{block} index {index}");
+        }
+    }
     println!("cid      {cid}");
+    println!("gateway  {gateway_url}");
+    Ok(())
+}
+
+/// Store every IPLD block of a CARv1 individually (each keyed by its own content
+/// hash) so the CAR's root DAG resolves on the IPFS gateway. Kubo chunks files
+/// into ≤256 KiB blocks, so every block fits a single ≤2 MiB extrinsic.
+async fn store_car(
+    env: &Env,
+    path: String,
+    mnemonic: Option<String>,
+    derivation_path: Option<String>,
+) -> Result<()> {
+    let file = tokio::fs::File::open(&path)
+        .await
+        .with_context(|| format!("opening CAR file {path}"))?;
+    let mut car = iroh_car::CarReader::new(tokio::io::BufReader::new(file))
+        .await
+        .with_context(|| format!("parsing CARv1 header from {path}"))?;
+
+    let root = *car
+        .header()
+        .roots()
+        .first()
+        .context("CAR header has no roots")?;
+
+    let client = OnlineClient::<BulletinConfig>::from_url(env.bulletin_rpc)
+        .await
+        .with_context(|| format!("connecting to Bulletin RPC {}", env.bulletin_rpc))?;
+    let signer = resolve_signer(mnemonic, derivation_path)?;
+
+    let mut stored = 0usize;
+    let mut skipped = 0usize;
+    while let Some((cid, data)) = car.next_block().await.context("reading next CAR block")? {
+        let hash = cid.hash();
+        if hash.code() != 0x12 {
+            bail!(
+                "block {cid} uses multihash code 0x{:x}; only sha2-256 (0x12) CARs are supported",
+                hash.code()
+            );
+        }
+        if hash.digest() != chain::content_hash(&data) {
+            bail!("block {cid}: CAR data does not hash to the CID digest (corrupt CAR?)");
+        }
+        if data.len() > MAX_TRANSACTION_SIZE {
+            bail!(
+                "block {cid} is {} bytes, exceeding the chain's MaxTransactionSize of {MAX_TRANSACTION_SIZE} bytes (2 MiB)",
+                data.len()
+            );
+        }
+
+        match chain::store_block(&client, &signer, cid.codec(), &data).await? {
+            chain::StoreOutcome::Stored { .. } => stored += 1,
+            chain::StoreOutcome::AlreadyPresent { .. } => skipped += 1,
+        }
+    }
+
+    let total = stored + skipped;
+    let gateway_url = format!("{}/ipfs/{root}/", env.ipfs_gateway);
+    println!("root     {root}");
+    println!("blocks   stored={stored} skipped={skipped} total={total}");
     println!("gateway  {gateway_url}");
     Ok(())
 }

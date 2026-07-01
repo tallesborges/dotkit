@@ -9,14 +9,14 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 subxt = "0.50"
 subxt-signer = "0.50"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
 hex = "0.4"
 alloy-primitives = "1"
 alloy-sol-types = "1"
 cid = "0.11"
 multihash-codetable = { version = "0.2", features = ["sha2"] }
 scale-info = "2.11"
+iroh-car = "0.5"
 
 # Added per slice as the surfaces get wired (versions verified 2026-07):
 #   rust-unixfs = "0.6"       # UnixFS encoder (Slice 4; pin the SHA)
-#   iroh-car = "0.5"          # CARv1 read/write

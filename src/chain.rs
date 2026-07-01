@@ -125,6 +125,79 @@ pub fn content_hash(data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// Result of storing a single IPLD block via [`store_block`].
+pub enum StoreOutcome {
+    Stored { block: u32, index: u32 },
+    AlreadyPresent { block: u32, index: u32 },
+}
+
+/// Store one blob (an IPLD block) on the Bulletin chain under its own content
+/// hash, using the block's `codec` and sha2-256. Idempotent: if the block is
+/// already stored (keyed by `sha256(data)` in `TransactionByContentHash`) it
+/// returns [`StoreOutcome::AlreadyPresent`] without submitting. `data` must be
+/// no larger than the chain's `MaxTransactionSize`; callers guard that.
+pub async fn store_block(
+    client: &OnlineClient<BulletinConfig>,
+    signer: &Keypair,
+    codec: u64,
+    data: &[u8],
+) -> Result<StoreOutcome> {
+    let content_hash = content_hash(data);
+
+    let at = client.at_current_block().await?;
+    let existing = at
+        .storage()
+        .try_fetch(
+            bulletin::storage()
+                .transaction_storage()
+                .transaction_by_content_hash(),
+            (content_hash,),
+        )
+        .await
+        .context("reading TransactionStorage.TransactionByContentHash")?;
+    if let Some(value) = existing {
+        let (block, index) = value.decode().context("decoding stored location")?;
+        return Ok(StoreOutcome::AlreadyPresent { block, index });
+    }
+    drop(at);
+
+    let cid_config =
+        bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::CidConfig {
+            codec,
+            hashing:
+                bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::HashingAlgorithm::Sha2_256,
+        };
+    let call = bulletin::tx()
+        .transaction_storage()
+        .store_with_cid_config(cid_config, data.to_vec());
+
+    client
+        .tx()
+        .await?
+        .sign_and_submit_then_watch_default(&call, signer)
+        .await
+        .context("submitting store_with_cid_config")?
+        .wait_for_finalized_success()
+        .await
+        .context("store_with_cid_config did not finalize successfully")?;
+
+    let at = client.at_current_block().await?;
+    let (block, index) = at
+        .storage()
+        .try_fetch(
+            bulletin::storage()
+                .transaction_storage()
+                .transaction_by_content_hash(),
+            (content_hash,),
+        )
+        .await
+        .context("re-reading TransactionByContentHash after store")?
+        .context("store finalized but TransactionByContentHash is still empty")?
+        .decode()
+        .context("decoding stored location")?;
+    Ok(StoreOutcome::Stored { block, index })
+}
+
 /// Build an sr25519 signer from a mnemonic (+ optional Substrate derivation path).
 /// When no mnemonic is supplied, fall back to the `//Alice` dev key so the demo
 /// works out of the box. The mnemonic is never logged.
