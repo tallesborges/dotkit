@@ -2,6 +2,7 @@ use crate::chain;
 use crate::commands::bulletin;
 use crate::dotns;
 use crate::env::Env;
+use crate::merkle;
 use crate::ui;
 use anyhow::{bail, Context, Result};
 use cid::Cid;
@@ -17,6 +18,9 @@ pub struct Args {
     /// Deploy a pre-built CAR instead of merkleizing the directory.
     #[arg(long)]
     pub input_car: Option<String>,
+    /// Merkleize with the Kubo `ipfs` binary instead of the native encoder (fallback).
+    #[arg(long)]
+    pub kubo: bool,
 }
 
 pub async fn run(
@@ -27,19 +31,23 @@ pub async fn run(
 ) -> Result<()> {
     let domain = dotns::normalize_name(&args.domain);
 
-    let (content_cid, car_path, _tmp) = match args.input_car {
+    let (content_cid, prepared) = match &args.input_car {
         Some(car) => {
             ui::step(format!("read CAR {car}"));
-            let root = car_root(&car).await?;
-            (root, car, None)
+            bulletin::read_car_prepared(car).await?
         }
-        None => {
+        None if args.kubo => {
             require_ipfs()?;
-            ui::step(format!("merkleize {}", args.dir));
-            let cid = merkleize(&args.dir)?;
+            ui::step(format!("merkleize {} (kubo)", args.dir));
+            let cid = merkleize_kubo(&args.dir)?;
             let tmp = TempCar::for_cid(&cid);
             export_car(&cid, tmp.path())?;
-            (cid, tmp.path().to_string(), Some(tmp))
+            bulletin::read_car_prepared(tmp.path()).await?
+        }
+        None => {
+            ui::step(format!("merkleize {}", args.dir));
+            let m = merkle::merkleize_dir(&args.dir)?;
+            (m.root, m.blocks)
         }
     };
     ui::kv("content", content_cid);
@@ -49,13 +57,8 @@ pub async fn run(
         "upload to Bulletin (pool signer //deploy/{pool_index})"
     ));
     let bulletin = chain::bulletin_client(env).await?;
-    let stored = bulletin::store_car_file(env, &bulletin, &car_path, &pool).await?;
-    if stored.root != content_cid {
-        bail!(
-            "CAR root {} does not match the merkleized content CID {content_cid}",
-            stored.root
-        );
-    }
+    let stored =
+        bulletin::store_prepared_blocks(env, &bulletin, content_cid, prepared, &pool).await?;
     ui::kv(
         "blocks",
         format!(
@@ -100,13 +103,13 @@ fn require_ipfs() -> Result<()> {
     Command::new("ipfs")
         .arg("--version")
         .output()
-        .context("`ipfs` (Kubo) not found on PATH; install it or pass --input-car")?;
+        .context("`ipfs` (Kubo) not found on PATH; drop --kubo to use the native encoder")?;
     Ok(())
 }
 
 /// Merkleize a directory with Kubo into a CIDv1 (raw leaves, unpinned) without
 /// adding it to the local pinset — just to compute the content DAG + root CID.
-fn merkleize(dir: &str) -> Result<Cid> {
+fn merkleize_kubo(dir: &str) -> Result<Cid> {
     let out = Command::new("ipfs")
         .args([
             "add",
@@ -149,20 +152,6 @@ fn export_car(cid: &Cid, path: &str) -> Result<()> {
         );
     }
     Ok(())
-}
-
-async fn car_root(path: &str) -> Result<Cid> {
-    let file = tokio::fs::File::open(path)
-        .await
-        .with_context(|| format!("opening CAR file {path}"))?;
-    let car = iroh_car::CarReader::new(tokio::io::BufReader::new(file))
-        .await
-        .with_context(|| format!("parsing CARv1 header from {path}"))?;
-    car.header()
-        .roots()
-        .first()
-        .copied()
-        .context("CAR header has no roots")
 }
 
 /// A temp CAR file removed on drop.

@@ -148,16 +148,9 @@ pub struct CarStored {
     pub skipped: usize,
 }
 
-/// Store every IPLD block of a CARv1 individually (each keyed by its own content
-/// hash) so the CAR's root DAG resolves on the IPFS gateway. Kubo chunks files
-/// into ≤256 KiB blocks, so every block fits a single ≤2 MiB extrinsic. Reuses
-/// the single `client` for the whole upload so metadata is downloaded once.
-pub async fn store_car_file(
-    env: &Env,
-    client: &OnlineClient<BulletinConfig>,
-    path: &str,
-    signer: &Keypair,
-) -> Result<CarStored> {
+/// Read a CARv1 file into its root CID + validated, upload-ready blocks. Verifies
+/// each block is sha2-256, hashes to its CID, and fits one ≤2 MiB extrinsic.
+pub async fn read_car_prepared(path: &str) -> Result<(cid::Cid, Vec<chain::PreparedBlock>)> {
     let file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("opening CAR file {path}"))?;
@@ -196,8 +189,20 @@ pub async fn store_car_file(
             content_hash,
         });
     }
-    let total = prepared.len();
+    Ok((root, prepared))
+}
 
+/// Store a prepared block set on the Bulletin chain (each block keyed by its own
+/// content hash) so `root`'s DAG resolves on the IPFS gateway. Reuses the single
+/// `client` for the whole upload so metadata is downloaded once.
+pub async fn store_prepared_blocks(
+    env: &Env,
+    client: &OnlineClient<BulletinConfig>,
+    root: cid::Cid,
+    prepared: Vec<chain::PreparedBlock>,
+    signer: &Keypair,
+) -> Result<CarStored> {
+    let total = prepared.len();
     let (stored, skipped) = chain::store_car_blocks(
         client,
         env.bulletin_rpc,
@@ -217,6 +222,19 @@ pub async fn store_car_file(
         stored,
         skipped,
     })
+}
+
+/// Store every IPLD block of a CARv1 individually (each keyed by its own content
+/// hash) so the CAR's root DAG resolves on the IPFS gateway. Kubo chunks files
+/// into ≤256 KiB blocks, so every block fits a single ≤2 MiB extrinsic.
+pub async fn store_car_file(
+    env: &Env,
+    client: &OnlineClient<BulletinConfig>,
+    path: &str,
+    signer: &Keypair,
+) -> Result<CarStored> {
+    let (root, prepared) = read_car_prepared(path).await?;
+    store_prepared_blocks(env, client, root, prepared, signer).await
 }
 
 async fn store_car(
