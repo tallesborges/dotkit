@@ -1,9 +1,9 @@
 use crate::chain::{self, bulletin, BulletinConfig, DEV_PHRASE};
 use crate::env::Env;
+use crate::ui;
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use rand::Rng;
-use std::io::Write;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use subxt::OnlineClient;
@@ -78,7 +78,7 @@ async fn status(
 
     let client = chain::bulletin_client(env).await?;
 
-    let scope = bulletin::runtime_types::pallet_bulletin_transaction_storage::types::AuthorizationScope::Account(account.clone());
+    let scope = bulletin::runtime_types::pallet_bulletin_transaction_storage::types::AuthorizationScope::Account(account);
     let address = bulletin::storage().transaction_storage().authorizations();
     let at = client.at_current_block().await?;
     let authorization = at
@@ -87,21 +87,23 @@ async fn status(
         .await
         .context("reading TransactionStorage.Authorizations")?;
 
-    println!("address                {account}");
+    ui::kv("address", account);
     match authorization {
         Some(value) => {
             let auth = value.decode().context("decoding Authorization")?;
             let e = auth.extent;
-            println!("authorized             yes");
-            println!(
-                "transactions           {} / {}",
-                e.transactions, e.transactions_allowance
+            ui::kv("authorized", "yes");
+            ui::kv(
+                "txs",
+                format!("{} / {}", e.transactions, e.transactions_allowance),
             );
-            println!("bytes_stored           {}", e.bytes);
-            println!("bytes_allowance        {}", e.bytes_allowance);
-            println!("expiration_block       {}", auth.expiration);
+            ui::kv(
+                "bytes",
+                format!("{} / {} allowance", e.bytes, e.bytes_allowance),
+            );
+            ui::kv("expires", format!("block #{}", auth.expiration));
         }
-        None => println!("authorized             no (not authorized)"),
+        None => ui::kv("authorized", "no (not authorized)"),
     }
     Ok(())
 }
@@ -128,14 +130,14 @@ async fn store(
 
     match chain::store_block(&client, &signer, 0x55, &data).await? {
         chain::StoreOutcome::AlreadyPresent { block, index } => {
-            println!("already stored at block #{block} index {index}");
+            ui::success(format!("already stored (block #{block} index {index})"));
         }
         chain::StoreOutcome::Stored { block, index } => {
-            println!("stored at block #{block} index {index}");
+            ui::success(format!("stored (block #{block} index {index})"));
         }
     }
-    println!("cid      {cid}");
-    println!("gateway  {gateway_url}");
+    ui::kv("cid", cid);
+    ui::kv("gateway", gateway_url);
     Ok(())
 }
 
@@ -202,14 +204,13 @@ pub async fn store_car_file(
         signer,
         &prepared,
         |done, stored, skipped| {
-            eprint!("\r  blocks {done}/{total}  (stored {stored}, skipped {skipped})");
-            let _ = std::io::stderr().flush();
+            ui::progress(format!(
+                "blocks     {done}/{total} · stored {stored} · skipped {skipped}"
+            ));
         },
     )
     .await?;
-    if total > 0 {
-        eprintln!();
-    }
+    ui::progress_clear();
 
     Ok(CarStored {
         root,
@@ -226,15 +227,21 @@ async fn store_car(
 ) -> Result<()> {
     let signer = resolve_signer(mnemonic, derivation_path)?;
     let client = chain::bulletin_client(env).await?;
+    ui::step(format!("upload {path} to Bulletin"));
     let summary = store_car_file(env, &client, &path, &signer).await?;
 
     let total = summary.stored + summary.skipped;
-    let gateway_url = format!("{}/ipfs/{}/", env.ipfs_gateway, summary.root);
-    println!("root     {}", summary.root);
-    println!(
-        "blocks   stored={} skipped={} total={total}",
-        summary.stored, summary.skipped
+    ui::kv("root", summary.root);
+    ui::kv(
+        "blocks",
+        format!(
+            "{} stored · {} skipped · {total} total",
+            summary.stored, summary.skipped
+        ),
     );
-    println!("gateway  {gateway_url}");
+    ui::kv(
+        "gateway",
+        format!("{}/ipfs/{}/", env.ipfs_gateway, summary.root),
+    );
     Ok(())
 }

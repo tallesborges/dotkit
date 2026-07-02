@@ -1,5 +1,6 @@
 use crate::chain;
 use crate::env::Env;
+use crate::ui;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::str::FromStr;
@@ -30,35 +31,41 @@ pub async fn run(
 ) -> Result<()> {
     match cmd {
         Cmd::Env => {
-            println!("env                    {}", env.id);
-            println!("bulletin_rpc           {}", env.bulletin_rpc);
-            println!("asset_hub_rpc          {}", env.asset_hub_rpc);
-            println!("ipfs_gateway           {}", env.ipfs_gateway);
-            println!("dotns_content_resolver {}", env.dotns_content_resolver);
+            ui::kv("env", env.id);
+            ui::kv("bulletin", env.bulletin_rpc);
+            ui::kv("asset_hub", env.asset_hub_rpc);
+            ui::kv("gateway", env.ipfs_gateway);
+            ui::kv("resolver", env.dotns_content_resolver);
         }
         Cmd::Whoami => {
             let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
             let account = chain::account_id(&signer);
             let (asset_hub, bulletin) =
                 tokio::try_join!(chain::asset_hub_client(env), chain::bulletin_client(env))?;
-            let h160 = chain::revive_address(&asset_hub, account.clone()).await?;
+            let h160 = chain::revive_address(&asset_hub, account).await?;
             let asset_hub_block = asset_hub.at_current_block().await?.block_number();
             let bulletin_block = bulletin.at_current_block().await?.block_number();
 
-            println!("env         {}", env.id);
-            println!("ss58        {account}");
-            println!("h160        0x{}", hex::encode(h160.0));
-            println!("asset_hub   {}  #{asset_hub_block}", env.asset_hub_rpc);
-            println!("bulletin    {}  #{bulletin_block}", env.bulletin_rpc);
+            ui::kv("env", env.id);
+            ui::kv("ss58", account);
+            ui::kv("h160", format!("0x{}", hex::encode(h160.0)));
+            ui::kv(
+                "asset_hub",
+                format!("{}  #{asset_hub_block}", env.asset_hub_rpc),
+            );
+            ui::kv(
+                "bulletin",
+                format!("{}  #{bulletin_block}", env.bulletin_rpc),
+            );
         }
         Cmd::Map => {
             let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
             let client = chain::asset_hub_client(env).await?;
             chain::ensure_mapped(&client, &signer).await?;
-            println!(
+            ui::success(format!(
                 "account {} is mapped on Asset Hub",
                 chain::account_id(&signer)
-            );
+            ));
         }
         Cmd::Transfer { dest, plancks } => {
             let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
@@ -67,11 +74,10 @@ pub async fn run(
             let tx = chain::transfer_keep_alive(env, &signer, dest, plancks)
                 .await
                 .context("transfer failed")?;
-            println!(
-                "transferred {plancks} plancks {} -> {dest} (tx 0x{})",
-                chain::account_id(&signer),
-                hex::encode(tx)
-            );
+            ui::success(format!("transferred {plancks} plancks"));
+            ui::kv("from", chain::account_id(&signer));
+            ui::kv("to", dest);
+            ui::kv("tx", format!("0x{}", hex::encode(tx)));
         }
     }
     Ok(())

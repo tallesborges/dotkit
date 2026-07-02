@@ -3,6 +3,7 @@ mod commands;
 mod dotns;
 mod env;
 mod registrar;
+mod ui;
 
 use clap::{Parser, Subcommand};
 
@@ -22,6 +23,10 @@ struct Cli {
     /// Substrate derivation path appended to the mnemonic (e.g. //Alice or //deploy/0).
     #[arg(long, global = true)]
     derivation_path: Option<String>,
+
+    /// Suppress step/detail output; only errors are printed (useful in CI/scripts).
+    #[arg(short, long, global = true)]
+    quiet: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -46,8 +51,16 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        ui::error(&err);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    ui::set_quiet(cli.quiet);
     let env = env::Env::resolve(&cli.env)?;
     match cli.command {
         Command::Deploy(args) => {

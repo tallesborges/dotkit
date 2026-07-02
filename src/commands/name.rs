@@ -1,6 +1,7 @@
 use crate::chain;
 use crate::dotns;
 use crate::env::Env;
+use crate::ui;
 use anyhow::{bail, Context, Result};
 use cid::Cid;
 use clap::Subcommand;
@@ -85,10 +86,10 @@ async fn register(
 
     let (owner, value_native) = chain::register_name(env, &signer, &name).await?;
     let cost_pas = value_native as f64 / 1e10;
-    println!(
-        "registered {name} -> owner 0x{} (cost ~{cost_pas} PAS)",
-        hex::encode(owner.0)
-    );
+    println!();
+    ui::success(format!("registered {name}"));
+    ui::kv("owner", format!("0x{}", hex::encode(owner.0)));
+    ui::kv("cost", format!("~{cost_pas} PAS"));
     Ok(())
 }
 
@@ -103,7 +104,7 @@ async fn set(
     let cid = Cid::try_from(cid).with_context(|| format!("invalid CID '{cid}'"))?;
     let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
 
-    println!("binding {name} -> {cid}");
+    ui::step(format!("bind {name} → {}", ui::ellipsize(&cid.to_string())));
     let client = chain::asset_hub_client(env).await?;
     let expected = chain::set_contenthash(&client, env, &signer, &name, &cid).await?;
 
@@ -115,6 +116,7 @@ async fn set(
             hex::encode(&onchain)
         );
     }
-    println!("bound    {cid}");
+    ui::success(format!("bound {name}"));
+    ui::kv("cid", cid);
     Ok(())
 }

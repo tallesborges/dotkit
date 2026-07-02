@@ -6,6 +6,8 @@ description = "A fast Rust CLI for the Triangle/Trinity ecosystem (Bulletin · D
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+anstyle = "1"
+anstream = "1"
 anyhow = "1"
 subxt = "0.50"
 subxt-signer = "0.50"

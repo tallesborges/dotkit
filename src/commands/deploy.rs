@@ -2,6 +2,7 @@ use crate::chain;
 use crate::commands::bulletin;
 use crate::dotns;
 use crate::env::Env;
+use crate::ui;
 use anyhow::{bail, Context, Result};
 use cid::Cid;
 use clap::Args as ClapArgs;
@@ -28,21 +29,25 @@ pub async fn run(
 
     let (content_cid, car_path, _tmp) = match args.input_car {
         Some(car) => {
+            ui::step(format!("read CAR {car}"));
             let root = car_root(&car).await?;
             (root, car, None)
         }
         None => {
             require_ipfs()?;
+            ui::step(format!("merkleize {}", args.dir));
             let cid = merkleize(&args.dir)?;
             let tmp = TempCar::for_cid(&cid);
             export_car(&cid, tmp.path())?;
             (cid, tmp.path().to_string(), Some(tmp))
         }
     };
+    ui::kv("content", content_cid);
 
-    println!("content  {content_cid}");
     let (pool, pool_index) = bulletin::pool_signer()?;
-    println!("uploading blocks to Bulletin (pool signer //deploy/{pool_index})...");
+    ui::step(format!(
+        "upload to Bulletin (pool signer //deploy/{pool_index})"
+    ));
     let bulletin = chain::bulletin_client(env).await?;
     let stored = bulletin::store_car_file(env, &bulletin, &car_path, &pool).await?;
     if stored.root != content_cid {
@@ -51,15 +56,24 @@ pub async fn run(
             stored.root
         );
     }
-    println!(
-        "stored   blocks stored={} skipped={} total={}",
-        stored.stored,
-        stored.skipped,
-        stored.stored + stored.skipped
+    ui::kv(
+        "blocks",
+        format!(
+            "{} stored · {} skipped · {} total",
+            stored.stored,
+            stored.skipped,
+            stored.stored + stored.skipped
+        ),
     );
-    println!("gateway  {}/ipfs/{content_cid}/", env.ipfs_gateway);
+    ui::kv(
+        "gateway",
+        format!("{}/ipfs/{content_cid}/", env.ipfs_gateway),
+    );
 
-    println!("binding  {domain} -> {content_cid} (domain-owner mnemonic)...");
+    ui::step(format!(
+        "bind {domain} → {}",
+        ui::ellipsize(&content_cid.to_string())
+    ));
     let owner = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
     let asset_hub = chain::asset_hub_client(env).await?;
     let expected = chain::set_contenthash(&asset_hub, env, &owner, &domain, &content_cid).await?;
@@ -74,9 +88,10 @@ pub async fn run(
 
     let label = domain.strip_suffix(".dot").unwrap_or(&domain);
     println!();
-    println!("deployed {content_cid}");
+    ui::success(format!("deployed {domain}"));
+    ui::kv("content", content_cid);
     if !env.web_gateway.is_empty() {
-        println!("url      https://{label}.{}", env.web_gateway);
+        ui::kv("url", format!("https://{label}.{}", env.web_gateway));
     }
     Ok(())
 }
@@ -118,16 +133,20 @@ fn merkleize(dir: &str) -> Result<Cid> {
     Cid::try_from(cid_str.as_str()).with_context(|| format!("parsing content CID '{cid_str}'"))
 }
 
-/// Export a CID's full DAG to a CARv1 file via `ipfs dag export`.
+/// Export a CID's full DAG to a CARv1 file via `ipfs dag export`. Captures
+/// stderr so Kubo's progress bar doesn't leak into our output.
 fn export_car(cid: &Cid, path: &str) -> Result<()> {
     let file = std::fs::File::create(path).with_context(|| format!("creating CAR file {path}"))?;
-    let status = Command::new("ipfs")
+    let out = Command::new("ipfs")
         .args(["dag", "export", &cid.to_string()])
         .stdout(file)
-        .status()
+        .output()
         .context("running `ipfs dag export`")?;
-    if !status.success() {
-        bail!("`ipfs dag export {cid}` failed");
+    if !out.status.success() {
+        bail!(
+            "`ipfs dag export {cid}` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }

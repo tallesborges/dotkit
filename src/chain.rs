@@ -1,6 +1,7 @@
 use crate::dotns;
 use crate::env::Env;
 use crate::registrar;
+use crate::ui;
 use anyhow::{bail, Context, Result};
 use cid::Cid;
 use futures::StreamExt;
@@ -56,7 +57,12 @@ fn metadata_cache_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(dir).join("trukit").join("metadata"));
     }
     let home = std::env::var_os("HOME").filter(|d| !d.is_empty())?;
-    Some(PathBuf::from(home).join(".cache").join("trukit").join("metadata"))
+    Some(
+        PathBuf::from(home)
+            .join(".cache")
+            .join("trukit")
+            .join("metadata"),
+    )
 }
 
 /// Filesystem-safe token identifying a chain endpoint (scheme stripped, every
@@ -95,7 +101,11 @@ async fn fetch_metadata_bytes<C: subxt::Config>(
     if let Some(version) = latest_version {
         let params = version.encode();
         let resp = methods
-            .state_call("Metadata_metadata_at_version", Some(params.as_slice()), None)
+            .state_call(
+                "Metadata_metadata_at_version",
+                Some(params.as_slice()),
+                None,
+            )
             .await
             .context("Metadata_metadata_at_version runtime call")?;
         // `Option<OpaqueMetadata>`; `OpaqueMetadata` encodes as a length-prefixed
@@ -795,7 +805,8 @@ pub async fn store_block(
 /// Standard Substrate dev phrase. Its bare-master account (empty derivation) is
 /// the dev-mode DotNS owner used by `bulletin-deploy` / `playground-cli`; its
 /// `//deploy/N` derivations are the authorized Bulletin pool.
-pub const DEV_PHRASE: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
+pub const DEV_PHRASE: &str =
+    "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
 /// Build an sr25519 signer from a mnemonic (+ optional derivation path). Defaults
 /// to the bare-master dev account so `trukit` owns the same dev-mode names
@@ -905,7 +916,7 @@ pub async fn ensure_mapped(client: &OnlineClient<AssetHubConfig>, signer: &Keypa
         return Ok(());
     }
 
-    println!("account not mapped on Asset Hub; submitting Revive.map_account()...");
+    ui::note("account not mapped on Asset Hub; submitting Revive.map_account()…");
     let call = asset_hub::tx().revive().map_account();
     let events = client
         .tx()
@@ -916,7 +927,10 @@ pub async fn ensure_mapped(client: &OnlineClient<AssetHubConfig>, signer: &Keypa
         .wait_for_finalized_success()
         .await
         .context("Revive.map_account did not finalize successfully")?;
-    println!("mapped (tx 0x{})", hex::encode(events.extrinsic_hash().0));
+    ui::kv(
+        "mapped",
+        format!("tx 0x{}", hex::encode(events.extrinsic_hash().0)),
+    );
     Ok(())
 }
 
@@ -1065,7 +1079,7 @@ pub async fn set_contenthash(
     let dest = parse_h160(env.dotns_content_resolver)?;
 
     let block = revive_call(client, signer, dest, 0, calldata).await?;
-    println!("setContenthash finalized (tx 0x{})", hex::encode(block));
+    ui::kv("tx", format!("0x{}", hex::encode(block)));
     Ok(contenthash)
 }
 
@@ -1089,17 +1103,13 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
         .at_current_block()
         .await?
         .runtime_apis()
-        .call(
-            asset_hub::runtime_apis()
-                .revive_api()
-                .address(origin.clone()),
-        )
+        .call(asset_hub::runtime_apis().revive_api().address(origin))
         .await
         .context("ReviveApi.address runtime call failed")?;
 
     let status_data = revive_view(
         &client,
-        origin.clone(),
+        origin,
         pop_rules,
         0,
         registrar::encode_classify_name(&label),
@@ -1115,7 +1125,7 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
 
     let price_data = revive_view(
         &client,
-        origin.clone(),
+        origin,
         pop_rules,
         0,
         registrar::encode_price(&label, owner),
@@ -1129,7 +1139,7 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
 
     let commitment_data = revive_view(
         &client,
-        origin.clone(),
+        origin,
         registrar,
         0,
         registrar::encode_make_commitment(registrar::registration(&label, owner, secret)),
@@ -1137,10 +1147,8 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
     .await?;
     let commitment = registrar::decode_commitment(&commitment_data)?;
 
-    println!(
-        "committing {name} (commitment 0x{})",
-        hex::encode(commitment)
-    );
+    ui::step(format!("commit {name}"));
+    ui::kv("commitment", format!("0x{}", hex::encode(commitment)));
     let commit_tx = revive_call(
         &client,
         signer,
@@ -1149,11 +1157,11 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
         registrar::encode_commit(commitment),
     )
     .await?;
-    println!("commit   finalized (tx 0x{})", hex::encode(commit_tx));
+    ui::kv("tx", format!("0x{}", hex::encode(commit_tx)));
 
     let age_data = revive_view(
         &client,
-        origin.clone(),
+        origin,
         registrar,
         0,
         registrar::encode_min_commitment_age(),
@@ -1161,10 +1169,11 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
     .await?;
     let min_age = registrar::decode_min_commitment_age(&age_data)?;
     let wait = min_age + 6;
-    println!("waiting {wait}s for commitment to mature");
+    ui::note(format!("waiting {wait}s for commitment to mature…"));
     tokio::time::sleep(Duration::from_secs(wait)).await;
 
-    println!("registering {name} (value {value_native} plancks)");
+    ui::step(format!("register {name}"));
+    ui::kv("value", format!("{value_native} plancks"));
     let register_tx = revive_call(
         &client,
         signer,
@@ -1173,7 +1182,7 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
         registrar::encode_register(registrar::registration(&label, owner, secret)),
     )
     .await?;
-    println!("register finalized (tx 0x{})", hex::encode(register_tx));
+    ui::kv("tx", format!("0x{}", hex::encode(register_tx)));
 
     let node = dotns::namehash(name);
     let owner_data =
