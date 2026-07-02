@@ -46,22 +46,20 @@ pub async fn run(
 }
 
 /// Resolve the write signer: the caller's mnemonic when supplied, otherwise a
-/// random authorized `//deploy/N` pool account (the default owner signer has no
-/// Bulletin quota — only the pool accounts do).
+/// random authorized account from the shared Bulletin storage pool (the default
+/// owner signer has no Bulletin quota — only the pool accounts do).
 fn resolve_signer(mnemonic: Option<String>, derivation_path: Option<String>) -> Result<Keypair> {
     match mnemonic {
         Some(phrase) => chain::build_signer(Some(&phrase), derivation_path.as_deref()),
-        None => pool_signer().map(|(signer, _)| signer),
+        None => pool_signer(),
     }
 }
 
-/// A random authorized `//deploy/N` (N in 0..=9) Bulletin pool account, spreading
-/// load and cutting nonce contention across concurrent deploys. Returns the index
-/// too so callers can report which pool account they used.
-pub fn pool_signer() -> Result<(Keypair, u32)> {
+/// A random authorized account from the shared Bulletin storage pool, spreading
+/// load and cutting nonce contention across concurrent deploys.
+pub fn pool_signer() -> Result<Keypair> {
     let n = rand::thread_rng().gen_range(0u32..=9);
-    let signer = chain::build_signer(Some(DEV_PHRASE), Some(&format!("//deploy/{n}")))?;
-    Ok((signer, n))
+    chain::build_signer(Some(DEV_PHRASE), Some(&format!("//deploy/{n}")))
 }
 
 async fn status(

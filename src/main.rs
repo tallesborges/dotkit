@@ -17,11 +17,11 @@ struct Cli {
     #[arg(long, global = true, default_value = "paseo-next-v2")]
     env: String,
 
-    /// Signer mnemonic (falls back to $MNEMONIC then $DOTNS_MNEMONIC; defaults to the shared bare-master dev account used on testnets).
+    /// Signer mnemonic (falls back to $MNEMONIC then $DOTNS_MNEMONIC; defaults to a shared dev account on testnets).
     #[arg(long, global = true)]
     mnemonic: Option<String>,
 
-    /// Substrate derivation path appended to the mnemonic (e.g. //Alice or //deploy/0).
+    /// Substrate derivation path appended to the mnemonic (e.g. //Alice).
     #[arg(long, global = true)]
     derivation_path: Option<String>,
 

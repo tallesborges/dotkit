@@ -52,10 +52,8 @@ pub async fn run(
     };
     ui::kv("content", content_cid);
 
-    let (pool, pool_index) = bulletin::pool_signer()?;
-    ui::step(format!(
-        "upload to Bulletin (pool signer //deploy/{pool_index})"
-    ));
+    let pool = bulletin::pool_signer()?;
+    ui::step("upload to Bulletin");
     let bulletin = chain::bulletin_client(env).await?;
     let stored =
         bulletin::store_prepared_blocks(env, &bulletin, content_cid, prepared, &pool).await?;

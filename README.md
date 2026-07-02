@@ -63,8 +63,8 @@ trukit name register myapp.dot
 ### Global flags
 
 - `--env <id>` — target environment (default `paseo-next-v2`).
-- `--mnemonic <phrase>` — signer mnemonic. Falls back to `$MNEMONIC`, then `$DOTNS_MNEMONIC`; defaults to the shared bare-master dev account used on testnets.
-- `--derivation-path <path>` — Substrate derivation path (e.g. `//Alice`, `//deploy/0`).
+- `--mnemonic <phrase>` — signer mnemonic. Falls back to `$MNEMONIC`, then `$DOTNS_MNEMONIC`; defaults to a shared dev account on testnets.
+- `--derivation-path <path>` — Substrate derivation path (e.g. `//Alice`).
 - `-q`, `--quiet` — suppress step/detail output; only errors are printed (useful in CI/scripts).
 
 ## Environments

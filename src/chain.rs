@@ -802,15 +802,15 @@ pub async fn store_block(
     Ok(StoreOutcome::Stored { block, index })
 }
 
-/// Standard Substrate dev phrase. Its bare-master account (empty derivation) is
-/// the shared dev-mode DotNS owner on testnets; its `//deploy/N` derivations are
-/// the authorized Bulletin pool.
+/// Standard Substrate dev phrase. Its base account (empty derivation) is the
+/// shared dev-mode DotNS owner on testnets; derived sub-accounts form the
+/// authorized Bulletin storage pool.
 pub const DEV_PHRASE: &str =
     "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
 /// Build an sr25519 signer from a mnemonic (+ optional derivation path). Defaults
-/// to the bare-master dev account so `trukit` owns the same shared dev-mode names
-/// on testnets. Never logs the mnemonic.
+/// to the shared dev account so `trukit` owns the same dev-mode names on testnets.
+/// Never logs the mnemonic.
 pub fn build_signer(mnemonic: Option<&str>, derivation_path: Option<&str>) -> Result<Keypair> {
     let phrase = mnemonic.unwrap_or(DEV_PHRASE);
     let suffix = derivation_path.unwrap_or("");
