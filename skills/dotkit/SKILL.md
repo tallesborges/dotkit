@@ -21,7 +21,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | `asset-hub transfer <dest> <plancks>` | Send native PAS. |
 | `asset-hub map` | Ensure the signer has an H160 mapping (`Revive.map_account`). |
 | `asset-hub name resolve <name.dot>` | Name → contenthash CID. |
-| `asset-hub name register <name.dot>` | Register an **open-tier** name (commit/reveal) to the signer. |
+| `asset-hub name register <name.dot>` | Register a name (commit/reveal) to the signer — open, or Lite/Full with a personhood-verified signer. |
 | `asset-hub name content set <name.dot> <cid>` | Bind a CID to a name's contenthash. |
 | `asset-hub name content <name.dot>` | Read the raw contenthash record. |
 | `asset-hub name text set <name.dot> <key> <value>` | Set a text record (e.g. `manifest`, `executable`). |
@@ -49,8 +49,8 @@ The registrar's `classifyName` (on `POP_RULES`) gates a label by shape + base le
 | Very short (`ab`) | 3 | Reserved |
 
 - **A label must end in NO digits or EXACTLY 2 digits.** 1 or 3+ trailing digits → the contract reverts: `Name must have no digit suffix or exactly 2 digit suffix`.
-- `dotkit name register` and `deploy --register` handle **tier 0 (open) only** — they bail on tier ≥1 with `requires PoP tier N (not open)`.
-- Lite/Full names need a **personhood-verified signer** and a registration path that supports those tiers; dotkit does open-tier only. Get testnet personhood at `sudo.personhood.dev/personhood-faucet` (env "Next V2").
+- `dotkit name register` and `deploy --register` handle **open (0) and personhood-gated Lite (1) / Full (2)**; **Reserved (3)** is rejected (governance-only). For Lite/Full, dotkit pre-checks the owner's `personhoodStatus(owner, "dotns")` on the AH precompile (`0x…0a010000`) and bails **before committing** if the signer's tier is too low.
+- Lite/Full names need a **personhood-verified signer** (Full satisfies Lite). Get testnet personhood at `sudo.personhood.dev/personhood-faucet` (env "Next V2"); the signer must also be funded + H160-mapped on Asset Hub. Note: People-chain personhood is **not** auto-bridged — bind it to the `dotns` context via `sudo.personhood.dev/dotns-bootstrap` first.
 
 ## Deploy workflow
 
@@ -58,11 +58,11 @@ The registrar's `classifyName` (on `POP_RULES`) gates a label by shape + base le
 # Deploy to a name you own (redeploy just updates the contenthash)
 dotkit deploy ./dist myapp.dot
 
-# First-time: register an open-tier name in the same run
+# First-time: register the name in the same run (open, or Lite/Full if the signer is verified)
 dotkit deploy ./dist myapp.dot --register
 ```
 
-`deploy` reads the Registry owner first: proceeds if you own it, errors if someone else does, and (with `--register`) registers an unregistered open-tier name before uploading. Then it merkleizes, uploads blocks to Bulletin (pool signer), binds the contenthash (owner signer), and prints the CID + `https://<name>.paseo.li`.
+`deploy` reads the Registry owner first: proceeds if you own it, errors if someone else does, and (with `--register`) registers an unregistered name (open, or Lite/Full if the signer has the personhood) before uploading. Then it merkleizes, uploads blocks to Bulletin (pool signer), binds the contenthash (owner signer), and prints the CID + `https://<name>.paseo.li`.
 
 **Optional `deploy.toml`** (`--config <path>` or auto-detected `./deploy.toml`; unknown keys rejected):
 
@@ -78,7 +78,7 @@ Each `[text]` entry is written via `setText` after the bind. The build dir is ne
 
 dotkit surfaces the real EVM revert reason. Map it:
 
-- `requires PoP tier N (not open)` → the name needs Lite/Full personhood; dotkit registers open-tier only.
+- `requires Lite/Full personhood, but the signer … has NoStatus` → the name is personhood-gated; use a verified signer (`sudo.personhood.dev/personhood-faucet`, env Next V2) or pick an open (long-base) name. dotkit bails here **before** committing.
 - `Name must have no digit suffix or exactly 2 digit suffix` → rename (0 or 2 trailing digits).
 - `custom error 0x14c417b5 …` echoing your H160 → not authorized (you don't own the node).
 - `no reason returned (empty revert…)` → often an unmapped account or an address with no code; run `account whoami` / `asset-hub map`.
@@ -90,7 +90,7 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 
 ## Hard rules
 
-- **Open-tier only** for dotkit registration; Lite/Full names need external personhood verification.
+- **Open + Lite/Full** registration (Reserved rejected). Lite/Full need a personhood-verified signer; dotkit pre-checks `personhoodStatus` and bails early if the signer's tier is too low.
 - **Name digits:** none or exactly two, else the register reverts.
 - **`<name>.paseo.li`** is the v2 gateway; `<name>.dot.li` points at the dead Summit chain — never use it for v2.
 - **Secrets** via `$MNEMONIC` / `$DOTNS_MNEMONIC`, not `--mnemonic` in shell history.

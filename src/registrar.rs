@@ -45,6 +45,13 @@ sol! {
     function register(Registration r) external payable;
 
     function owner(bytes32 node) external view returns (address);
+
+    struct PersonhoodInfo {
+        uint8 status;
+        bytes32 contextAlias;
+    }
+
+    function personhoodStatus(address account, bytes32 context) external view returns (PersonhoodInfo);
 }
 
 fn to_address(h: H160) -> Address {
@@ -137,6 +144,23 @@ pub fn decode_owner(data: &[u8]) -> Result<H160> {
     Ok(to_h160(ret))
 }
 
+/// ABI-encode `personhoodStatus(account, context)` on the personhood precompile.
+pub fn encode_personhood_status(account: H160, context: [u8; 32]) -> Vec<u8> {
+    personhoodStatusCall {
+        account: to_address(account),
+        context: FixedBytes::from(context),
+    }
+    .abi_encode()
+}
+
+/// Decode `personhoodStatus` → the account's personhood tier (0 NoStatus /
+/// 1 Lite / 2 Full / 3 Reserved) in the queried context.
+pub fn decode_personhood_status(data: &[u8]) -> Result<u8> {
+    let ret =
+        personhoodStatusCall::abi_decode_returns(data).context("decoding personhoodStatus")?;
+    Ok(ret.status)
+}
+
 /// Convert an 18-decimal EVM wei price into the native `Revive.call` value.
 /// Applies the +10% margin the contract charges, ceiling the wei division,
 /// then scales from 18-decimal wei to the 10-decimal native token (ratio 1e8).
@@ -166,5 +190,18 @@ mod tests {
         assert_eq!(hex::encode(minCommitmentAgeCall::SELECTOR), "8d839ffe");
         assert_eq!(hex::encode(registerCall::SELECTOR), "b26675d5");
         assert_eq!(hex::encode(ownerCall::SELECTOR), "02571be3");
+        assert_eq!(hex::encode(personhoodStatusCall::SELECTOR), "886af133");
+    }
+
+    #[test]
+    fn personhood_status_decodes() {
+        // Real returndata from the personhood precompile on paseo-next-v2 for a
+        // Full account: status word (=2) ++ 32-byte context alias.
+        let data = hex::decode(
+            "0000000000000000000000000000000000000000000000000000000000000002\
+             abff28c3a6547093e759274350d8640312a2073bfc0584896af86be939496e25",
+        )
+        .unwrap();
+        assert_eq!(decode_personhood_status(&data).unwrap(), 2);
     }
 }

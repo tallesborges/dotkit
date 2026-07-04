@@ -255,6 +255,14 @@ live chain + gateway:
   cause: the dry-run evaluates at the lagging finalized block, so a wall-clock sleep raced the on-chain clock
   and reverted ~6s short. Live-verified end-to-end: `dotshare-preview00.dot` (which previously failed with
   `CommitmentTooNew`) now registers cleanly.
+- ✅ **Lite/Full registration + personhood precheck** — `name register` / `deploy --register` now handle
+  open (0) **and** personhood-gated Lite (1) / Full (2); Reserved (3) is rejected. For tier ≥1 it reads
+  `personhoodStatus(owner, "dotns")` on the AH precompile (`0x…0a010000`, selector `886af133`) and bails
+  **before committing** if the signer's tier is too low (with a `sudo.personhood.dev` pointer). The on-chain
+  `register` call is identical to open-tier (confirmed against `dotns-cli` — no proof/ring-VRF), so this was a
+  guard relax + precheck. Live-verified: the default signer has Full personhood → registered a fresh Lite name
+  (`dotkitlt42.dot`) end-to-end; a NoStatus signer (`//Alice`) is rejected up front with no wasted commit.
+  Golden-tested: `personhoodStatus` selector + a real-returndata decode (Full=2).
 
 **Remaining:** subname contenthashes (needs registry subnode creation), plus polish (>2 MiB single-blob
 path, `preview` env addresses, register non-open tiers). Deviations from the plan below: DotNS **read**

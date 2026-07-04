@@ -1272,10 +1272,38 @@ async fn await_commitment_mature(
     }
 }
 
-/// Register an open-tier `.dot` `name` for `signer` via the commit/reveal flow on
-/// the DotNS RegistrarController. Signs and submits `commit` then, after the
-/// commitment matures, the payable `register`, and verifies ownership in the
-/// Registry. Returns the owner H160 and the native value paid. `name` must be
+/// pallet_revive personhood precompile — fixed runtime address, same across envs.
+const PERSONHOOD_PRECOMPILE: &str = "0x000000000000000000000000000000000a010000";
+
+/// Human name for a personhood tier byte (matches DotNS `PopStatus`).
+fn tier_name(tier: u8) -> &'static str {
+    match tier {
+        0 => "NoStatus",
+        1 => "Lite",
+        2 => "Full",
+        3 => "Reserved",
+        _ => "unknown",
+    }
+}
+
+/// Read `owner`'s DotNS personhood tier from the Asset Hub personhood precompile
+/// (`personhoodStatus(owner, "dotns")`): 0 NoStatus / 1 Lite / 2 Full / 3 Reserved.
+async fn personhood_status(client: &OnlineClient<AssetHubConfig>, owner: H160) -> Result<u8> {
+    let mut context = [0u8; 32];
+    context[..5].copy_from_slice(b"dotns");
+    let dest = parse_h160(PERSONHOOD_PRECOMPILE)?;
+    let origin = account_id(&build_signer(None, None)?);
+    let calldata = registrar::encode_personhood_status(owner, context);
+    let data = revive_view(client, origin, dest, 0, calldata).await?;
+    registrar::decode_personhood_status(&data)
+}
+
+/// Register a `.dot` `name` for `signer` via the commit/reveal flow on the DotNS
+/// RegistrarController. Handles open (tier 0) and personhood-gated Lite/Full (tier
+/// 1/2) names — for the latter it pre-checks the owner's personhood so we fail
+/// before committing; Reserved (tier 3) is rejected. Signs `commit`, waits for the
+/// commitment to mature, submits the payable `register`, and verifies ownership in
+/// the Registry. Returns the owner H160 and the native value paid. `name` must be
 /// normalized already.
 pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H160, u128)> {
     let label = name.strip_suffix(".dot").unwrap_or(name).to_string();
@@ -1304,12 +1332,30 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
         registrar::encode_classify_name(&label),
     )
     .await?;
-    let status = registrar::decode_classify_status(&status_data)?;
-    if status != 0 {
-        bail!(
-            "{name} requires PoP tier {status} (not open); \
-             dotkit only supports open-tier registration"
-        );
+    let required = registrar::decode_classify_status(&status_data)?;
+    if required == 3 {
+        bail!("{name} classifies as Reserved (governance tier); dotkit does not register reserved names");
+    }
+    if required >= 1 {
+        // Personhood-gated name: the owner must already hold Lite/Full personhood
+        // in the DotNS context, else `register` reverts on-chain. Check up front so
+        // we fail before spending a commit.
+        let have = personhood_status(&client, owner).await?;
+        if have < required {
+            bail!(
+                "{name} requires {} personhood, but the signer (0x{}) has {}. \
+                 Get verified at https://sudo.personhood.dev/personhood-faucet (env Next V2), \
+                 or pass --mnemonic for a verified account.",
+                tier_name(required),
+                hex::encode(owner.0),
+                tier_name(have),
+            );
+        }
+        ui::note(format!(
+            "personhood ok — signer has {} (name needs {})",
+            tier_name(have),
+            tier_name(required)
+        ));
     }
 
     let price_data = revive_view(
