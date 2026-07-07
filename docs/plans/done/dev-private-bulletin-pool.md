@@ -1,3 +1,5 @@
+> Stage: **done** — shipped Phases 0–4 (commits `88c3942` + `292a5b9`).
+
 # dotkit — per-machine private Bulletin pool for dev (Ship-First Plan)
 
 Today every dotkit user on testnet uploads Bulletin blocks through the **same** shared
@@ -70,9 +72,12 @@ Prove on `paseo-next-v2` with existing commands only:
   owns this name" already works.
 - Shipped: `dev::PoolSource` + `dev::pool_signer(source)` (auto/local/shared, with a one-line pool/account note); renamed `chain::pool_signer` → `chain::shared_pool_signer`; global `--pool` flag; `deploy` + `bulletin store/store-car/status` route through it. Verified on `paseo-next-v2`: default→`private //deploy/1` (0/1000 txs), `--pool shared`→congested shared account (1031/1000 txs, 412 MB/100 MB), `--pool local`→clean; real `bulletin store` uploaded via `private //deploy/7` (block #902475). Docs synced.
 
-### Phase 4 — Polish
+### Phase 4 — Polish ✅ DONE (2026-07-07)
 - `--accounts N` to grow the pool; `dotkit bulletin pool status`.
 - Sync `README.md` + `skills/dotkit/SKILL.md` in the **same change** (required by `AGENTS.md`).
+- Beyond plan: commands moved to `bulletin pool` (dropped the `dev` namespace); `bulletin pool status` is on-chain and honors `--pool` (per-account auth + quota, `N/M authorized` rollup).
+
+## Status: COMPLETE (Phases 0–4 shipped, committed `88c3942` + `292a5b9`).
 
 ## Costs / risks
 
