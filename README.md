@@ -97,7 +97,7 @@ dotkit asset-hub name register myapp.dot
 - `--env <id>` — target environment (default `paseo-next-v2`).
 - `--mnemonic <phrase>` — signer mnemonic. Falls back to `$MNEMONIC`, then `$DOTNS_MNEMONIC`; defaults to a shared dev account on testnets.
 - `--derivation-path <path>` — Substrate derivation path (e.g. `//Alice`).
-- `--pool <local|shared>` — which Bulletin upload pool to sign with. Default: the private `~/.dotkit` pool if a keystore exists (see `bulletin pool init`), else the shared dev pool.
+- `--pool <local|shared>` — which Bulletin upload pool to sign with. Default: the private `~/.dotkit` pool if a keystore exists, else the shared dev pool. See [Bulletin upload pools](#bulletin-upload-pools).
 - `-q`, `--quiet` — suppress step/detail output; only errors are printed (useful in CI/scripts).
 - `--json` — emit one machine-readable JSON object per command instead of human output; on failure prints `{"error": …}` to stderr.
 
@@ -107,6 +107,46 @@ dotkit asset-hub name register myapp.dot
 |---|---|---|
 | `paseo-next-v2` (default) | Paseo Next v2 | Full support; resolves at `<name>.paseo.li`. |
 | `preview` | PreviewNet | Partial — `asset-hub name register` is not yet wired. |
+
+## Bulletin upload pools
+
+Uploading blocks to Bulletin is signed by an account from an **upload pool** — a set of `//deploy/N` accounts used round-robin so parallel uploads don't collide on nonces or quota. There are two pools:
+
+- **Shared dev pool** — derived from the well-known public dev phrase (`DEV_PHRASE//deploy/{0..9}`). Pre-funded and Bulletin-authorized on testnets. Zero setup, but **everyone shares it**, so you contend with other users for nonces and quota.
+- **Private pool** — a per-machine keystore at `~/.dotkit/pool.toml` (`0600`) holding a locally-generated 12-word mnemonic and its own `//deploy/N` accounts. Isolated from other users. **Testnet-only** — the mnemonic is plaintext and holds no mainnet value.
+
+### Which pool a command uses
+
+Selection is controlled by the global `--pool` flag:
+
+| `--pool` value | Behavior |
+|---|---|
+| *(omitted — default)* | **Auto:** use the private pool **if** `~/.dotkit/pool.toml` exists, otherwise fall back to the shared dev pool. |
+| `--pool local` | Force the private pool (errors if no keystore — run `pool init` first). |
+| `--pool shared` | Force the shared dev pool, even if a private keystore exists. |
+
+> A private pool is **never created automatically.** Until you run `pool init`, every command signs with the shared dev pool.
+
+### Create and use your own pool
+
+```sh
+# 1. Generate a private per-machine pool (writes ~/.dotkit/pool.toml, prints the accounts)
+dotkit bulletin pool init            # --accounts N to change the count (default 10), --force to regenerate
+
+# 2. Authorize the pool accounts for Bulletin storage (signer defaults to //Alice)
+dotkit bulletin pool authorize       # idempotent — skips already-authorized accounts
+
+# 3. Check each account's on-chain authorization + quota
+dotkit bulletin pool status          # --pool shared to inspect the shared pool instead
+
+# From now on, deploys auto-use your private pool (a keystore now exists):
+dotkit deploy ./dist myapp.dot
+# ...or force one explicitly:
+dotkit deploy ./dist myapp.dot --pool local     # your private pool
+dotkit deploy ./dist myapp.dot --pool shared    # the shared dev pool
+```
+
+Every signed command prints a one-line note of which pool + account it picked (e.g. `pool: private //deploy/3 (…)` or `pool: shared (…)`), suppressed under `--quiet`/`--json`.
 
 ## How merkleization stays Kubo-compatible
 
