@@ -83,7 +83,7 @@ dotkit asset-hub name register myapp.dot
 | `account env` | Print the resolved environment config. |
 | `account whoami` | Derive the signer and prove Asset Hub + Bulletin connectivity. |
 | `account info` | Show the signer's Asset Hub native (PAS) balance. |
-| `bulletin pool init [--accounts N] [--force]` | Generate a private per-machine Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`) and print its `//deploy/N` accounts. Testnet-only. |
+| `bulletin pool init [--accounts N] [--force] [--skip-authorize]` | Generate a private per-machine Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`), print its `//deploy/N` accounts, and authorize them on-chain (via `//Alice`) in one step. `--skip-authorize` generates the keystore only. Testnet-only. |
 | `bulletin pool status` | Show each pool account's on-chain authorization + quota (txs/bytes used vs allowance) with an `N/M authorized` rollup. `--pool shared` inspects the shared pool instead. |
 | `bulletin pool authorize [--transactions N] [--bytes N]` | Authorize all pool accounts for Bulletin storage in one `utility.batch_all` (signer defaults to `//Alice`). Idempotent — skips already-authorized. |
 
@@ -130,20 +130,25 @@ Selection is controlled by the global `--pool` flag:
 ### Create and use your own pool
 
 ```sh
-# 1. Generate a private per-machine pool (writes ~/.dotkit/pool.toml, prints the accounts)
-dotkit bulletin pool init            # --accounts N to change the count (default 10), --force to regenerate
-
-# 2. Authorize the pool accounts for Bulletin storage (signer defaults to //Alice)
-dotkit bulletin pool authorize       # idempotent — skips already-authorized accounts
-
-# 3. Check each account's on-chain authorization + quota
-dotkit bulletin pool status          # --pool shared to inspect the shared pool instead
+# Generate a private per-machine pool AND authorize its accounts for Bulletin storage.
+# Writes ~/.dotkit/pool.toml (0600) and prints the //deploy/N accounts.
+dotkit bulletin pool init
+#   --accounts N        change the account count (default 10)
+#   --force             regenerate (new mnemonic) over an existing keystore
+#   --skip-authorize    only generate the keystore; authorize later
 
 # From now on, deploys auto-use your private pool (a keystore now exists):
 dotkit deploy ./dist myapp.dot
 # ...or force one explicitly:
 dotkit deploy ./dist myapp.dot --pool local     # your private pool
 dotkit deploy ./dist myapp.dot --pool shared    # the shared dev pool
+```
+
+`pool init` authorizes the accounts on-chain in the same step, signed by the testnet Authorizer `//Alice` by default (override with `--mnemonic`/`--derivation-path`). Two more commands help you inspect/repair the pool:
+
+```sh
+dotkit bulletin pool status      # each account's on-chain authorization + quota (--pool shared for the shared pool)
+dotkit bulletin pool authorize   # (re)authorize accounts — idempotent; only needed after --skip-authorize or to raise allowances
 ```
 
 Every signed command prints a one-line note of which pool + account it picked (e.g. `pool: private //deploy/3 (…)` or `pool: shared (…)`), suppressed under `--quiet`/`--json`.

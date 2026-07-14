@@ -157,7 +157,10 @@ pub fn pool_signer(source: PoolSource) -> Result<Keypair> {
         };
         let n = rand::thread_rng().gen_range(0..pool.accounts);
         let kp = pool_keypair(&pool.mnemonic, n)?;
-        ui::note(format!("pool: private //deploy/{n} ({})", chain::account_id(&kp)));
+        ui::note(format!(
+            "pool: private //deploy/{n} ({})",
+            chain::account_id(&kp)
+        ));
         Ok(kp)
     } else {
         let kp = chain::shared_pool_signer()?;

@@ -33,7 +33,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | `asset-hub name text get <name.dot> <key>` | Read a text record. |
 | `account env` / `account whoami` | Print resolved env / prove signer + chain connectivity (shows SS58 + H160). |
 | `account info` | Show the signer's Asset Hub native (PAS) balance. |
-| `bulletin pool init [--accounts N] [--force]` / `status` / `authorize [--transactions N] [--bytes N]` | Manage a **private per-machine** Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`; derived `//deploy/N`). `status` shows each account's **on-chain** auth + quota with an `N/M authorized` rollup (honors `--pool`, so `--pool shared` inspects the shared pool). `authorize` batch-authorizes all accounts via `//Alice` (`utility.batch_all`, idempotent). `deploy`/`store` use the pool by default (override with `--pool local\|shared`). Testnet-only. |
+| `bulletin pool init [--accounts N] [--force] [--skip-authorize]` / `status` / `authorize [--transactions N] [--bytes N]` | Manage a **private per-machine** Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`; derived `//deploy/N`). `init` generates the keystore **and authorizes** its accounts on-chain via `//Alice` (`utility.batch_all`) in one step — pass `--skip-authorize` for offline-only generation. `status` shows each account's **on-chain** auth + quota with an `N/M authorized` rollup (honors `--pool`, so `--pool shared` inspects the shared pool). `authorize` (re)batch-authorizes all accounts via `//Alice` (idempotent). `deploy`/`store` use the pool by default (override with `--pool local\|shared`). Testnet-only. |
 
 **Global flags:** `--env <id>` (default `paseo-next-v2`), `--mnemonic`, `--derivation-path //x`, `--pool <local|shared>` (Bulletin upload pool; default: private `~/.dotkit` pool if a keystore exists, else shared), `-q/--quiet`, `--json` (one machine-readable JSON object per command; errors become `{"error": …}` on stderr).
 **`deploy` flags:** `--register`, `--config <deploy.toml>`, `--input-car <file>`, `--kubo`.
@@ -41,7 +41,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 ## Signer & account model
 
 - Default signer = a shared **dev account** (base of the standard dev phrase); its base derivation is the dev-mode DotNS owner on testnets. Override with `--mnemonic` (or `$MNEMONIC`, then `$DOTNS_MNEMONIC`) + `--derivation-path`.
-- **Bulletin writes** use a random authorized **pool account** `//deploy/{0..N}`. By default this is the **private per-machine pool** (`~/.dotkit/pool.toml`) when a keystore exists (`bulletin pool init` + `bulletin pool authorize`), else the **shared** `DEV_PHRASE//deploy/{0..9}` pool; force either with `--pool local|shared`. Pool accounts are Bulletin-authorized but **not funded on Asset Hub** — never use one as the DotNS owner signer (its `map_account`/bind will fail "balance too low").
+- **Bulletin writes** use a random authorized **pool account** `//deploy/{0..N}`. By default this is the **private per-machine pool** (`~/.dotkit/pool.toml`) when a keystore exists (`bulletin pool init`, which now also authorizes), else the **shared** `DEV_PHRASE//deploy/{0..9}` pool; force either with `--pool local|shared`. Pool accounts are Bulletin-authorized but **not funded on Asset Hub** — never use one as the DotNS owner signer (its `map_account`/bind will fail "balance too low").
 - Every Revive write auto-runs `Revive.map_account` if the signer isn't mapped.
 
 ## DotNS naming rules & PoP tiers (verified on-chain)

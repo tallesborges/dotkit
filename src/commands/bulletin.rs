@@ -58,7 +58,10 @@ pub enum Cmd {
 
 #[derive(Subcommand)]
 pub enum PoolCmd {
-    /// Generate + persist a private pool keystore and print its `//deploy/N` accounts.
+    /// Generate + persist a private pool keystore, print its `//deploy/N` accounts,
+    /// and authorize them for Bulletin storage. Authorization is signed by the testnet
+    /// Authorizer `//Alice` by default (override with global `--mnemonic`/`--derivation-path`);
+    /// pass `--skip-authorize` to only generate the keystore offline.
     Init {
         /// Number of //deploy/N accounts to derive.
         #[arg(long, default_value_t = pool::DEFAULT_ACCOUNTS)]
@@ -66,6 +69,9 @@ pub enum PoolCmd {
         /// Overwrite an existing keystore (generates a NEW mnemonic).
         #[arg(long)]
         force: bool,
+        /// Only generate the keystore; skip the on-chain authorization step.
+        #[arg(long)]
+        skip_authorize: bool,
     },
     /// Show the private pool accounts (offline; no chain access).
     Status,
@@ -74,10 +80,10 @@ pub enum PoolCmd {
     /// `--mnemonic`/`--derivation-path`. Idempotent: already-authorized accounts are skipped.
     Authorize {
         /// Transaction count to authorize per account.
-        #[arg(long, default_value_t = 1_000_000)]
+        #[arg(long, default_value_t = DEFAULT_AUTH_TRANSACTIONS)]
         transactions: u32,
         /// Byte allowance per account (default: 100 MiB).
-        #[arg(long, default_value_t = 104_857_600)]
+        #[arg(long, default_value_t = DEFAULT_AUTH_BYTES)]
         bytes: u64,
     },
 }
@@ -103,7 +109,21 @@ pub async fn run(
             transactions,
             bytes,
         } => authorize(env, address, transactions, bytes, mnemonic, derivation_path).await,
-        Cmd::Pool(PoolCmd::Init { accounts, force }) => pool_init(accounts, force),
+        Cmd::Pool(PoolCmd::Init {
+            accounts,
+            force,
+            skip_authorize,
+        }) => {
+            pool_init(
+                env,
+                accounts,
+                force,
+                skip_authorize,
+                mnemonic,
+                derivation_path,
+            )
+            .await
+        }
         Cmd::Pool(PoolCmd::Status) => pool_status(env, pool_source).await,
         Cmd::Pool(PoolCmd::Authorize {
             transactions,
@@ -362,7 +382,18 @@ async fn store_car(
 
 // ---- private upload pool (`bulletin pool …`) ----
 
-fn pool_init(accounts: u32, force: bool) -> Result<()> {
+/// Default per-account allowances granted by `pool authorize` / `pool init`.
+const DEFAULT_AUTH_TRANSACTIONS: u32 = 1_000_000;
+const DEFAULT_AUTH_BYTES: u64 = 104_857_600;
+
+async fn pool_init(
+    env: &Env,
+    accounts: u32,
+    force: bool,
+    skip_authorize: bool,
+    mnemonic: Option<String>,
+    derivation_path: Option<String>,
+) -> Result<()> {
     if accounts == 0 {
         bail!("--accounts must be >= 1");
     }
@@ -379,7 +410,25 @@ fn pool_init(accounts: u32, force: bool) -> Result<()> {
     }
     let p = pool::generate(accounts)?;
     let path = pool::save(&p)?;
-    print_pool(&p, &path, true)
+    print_pool(&p, &path, true)?;
+
+    if skip_authorize {
+        ui::note(
+            "skipped on-chain authorization (--skip-authorize); \
+             run `dotkit bulletin pool authorize` before deploying",
+        );
+        return Ok(());
+    }
+
+    authorize_pool(
+        env,
+        &p,
+        mnemonic,
+        derivation_path,
+        DEFAULT_AUTH_TRANSACTIONS,
+        DEFAULT_AUTH_BYTES,
+    )
+    .await
 }
 
 async fn pool_status(env: &Env, pool_source: pool::PoolSource) -> Result<()> {
@@ -428,14 +477,23 @@ async fn pool_status(env: &Env, pool_source: pool::PoolSource) -> Result<()> {
                     &format!("//deploy/{i}"),
                     format!(
                         "{addr}  txs {}/{} · bytes {}/{} · exp #{}",
-                        e.transactions, e.transactions_allowance, e.bytes, e.bytes_allowance,
+                        e.transactions,
+                        e.transactions_allowance,
+                        e.bytes,
+                        e.bytes_allowance,
                         e.expiration
                     ),
                 ),
-                None => ui::kv(&format!("//deploy/{i}"), format!("{addr}  ✗ not authorized")),
+                None => ui::kv(
+                    &format!("//deploy/{i}"),
+                    format!("{addr}  ✗ not authorized"),
+                ),
             }
         }
-        ui::success(format!("{authorized}/{} authorized ({label} pool)", accts.len()));
+        ui::success(format!(
+            "{authorized}/{} authorized ({label} pool)",
+            accts.len()
+        ));
     }
     Ok(())
 }
@@ -454,7 +512,21 @@ async fn pool_authorize(
             path.display()
         );
     };
-    let accts = pool::accounts(&p)?;
+    authorize_pool(env, &p, mnemonic, derivation_path, transactions, bytes).await
+}
+
+/// Authorize every account of `p` for Bulletin storage in one `utility.batch_all`.
+/// Signs with the caller's `--mnemonic`/`--derivation-path` when given, otherwise the
+/// testnet Authorizer `//Alice`. Idempotent: already-authorized accounts are skipped.
+async fn authorize_pool(
+    env: &Env,
+    p: &pool::Pool,
+    mnemonic: Option<String>,
+    derivation_path: Option<String>,
+    transactions: u32,
+    bytes: u64,
+) -> Result<()> {
+    let accts = pool::accounts(p)?;
 
     // Authorizer signer: default to the testnet Authorizer `//Alice`; otherwise
     // honour an explicit --mnemonic/--derivation-path.

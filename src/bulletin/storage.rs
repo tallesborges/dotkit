@@ -460,7 +460,10 @@ pub async fn authorization(
 }
 
 /// Whether `who` currently holds a Bulletin `TransactionStorage` authorization.
-pub async fn is_authorized(client: &OnlineClient<BulletinConfig>, who: &AccountId32) -> Result<bool> {
+pub async fn is_authorized(
+    client: &OnlineClient<BulletinConfig>,
+    who: &AccountId32,
+) -> Result<bool> {
     Ok(authorization(client, who).await?.is_some())
 }
 
