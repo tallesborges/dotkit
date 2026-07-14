@@ -24,6 +24,14 @@ release:
 install:
     cargo install --path . --force
 
+# Download the prebuilt release binary into a PATH bin dir (see ./install.sh)
+install-bin *args:
+    ./install.sh {{args}}
+
+# Build from a local checkout + install to a PATH bin dir
+install-bin-src *args:
+    ./install.sh --from-source {{args}}
+
 # Run tests
 test:
     cargo test

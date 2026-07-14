@@ -12,14 +12,36 @@ The first-class command is `dotkit deploy`, a native replacement for the existin
 
 ## Install
 
-Requires a recent stable Rust toolchain.
+The quickest way — download the prebuilt binary for your platform (no Rust toolchain needed):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tallesborges/dotkit/master/install.sh | bash
+```
+
+This grabs the latest release, verifies its checksum, and installs `dotkit` into a directory on your `PATH` (defaults to `~/.local/bin`). Then `dotkit --help` should work from anywhere. If the installer warns that the bin dir isn't on your `PATH`, add the printed `export PATH=...` line to your shell profile.
+
+Prebuilt binaries are published for **macOS (aarch64)** and **Linux (x86_64)**.
+
+Installer options (run it locally to pass flags):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tallesborges/dotkit/master/install.sh -o install.sh
+bash install.sh --version v0.1.0     # pin a specific release tag
+bash install.sh --bin-dir ~/bin      # install into a specific dir (or BIN_DIR=~/bin)
+bash install.sh --from-source        # build from a local checkout with cargo instead
+```
+
+### Build from source
+
+Requires a recent stable Rust toolchain ([rustup.rs](https://rustup.rs)):
 
 ```sh
 git clone git@github.com:tallesborges/dotkit.git
 cd dotkit
-cargo build --release
-# binary at ./target/release/dotkit
+./install.sh --from-source   # builds release + installs to ~/.local/bin
 ```
+
+Or use Cargo directly: `cargo install --path .` (or `just install`) puts `dotkit` in `~/.cargo/bin`. Or just `cargo build --release` and run `./target/release/dotkit`.
 
 ## Quickstart
 
