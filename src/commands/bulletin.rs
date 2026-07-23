@@ -437,26 +437,33 @@ async fn pool_init(
 async fn pool_status(env: &Env, pool_source: pool::PoolSource) -> Result<()> {
     let (label, accts) = pool::accounts_for(pool_source)?;
     let client = bulletin::bulletin_client(env).await?;
+    let current_block = client.at_current_block().await?.block_number();
 
     ui::step(format!("pool status ({label} · {} accounts)", accts.len()));
     let mut authorized = 0usize;
     let mut rows = Vec::new();
     for (i, a) in &accts {
         let info = bulletin::authorization(&client, a).await?;
-        if info.is_some() {
+        // A lingering-but-expired authorization no longer grants free storage, so
+        // it doesn't count toward the deployable rollup.
+        let expired = info
+            .as_ref()
+            .is_some_and(|e| u64::from(e.expiration) <= current_block);
+        if info.is_some() && !expired {
             authorized += 1;
         }
-        rows.push((*i, a.clone(), info));
+        rows.push((*i, *a, info, expired));
     }
 
     if ui::json() {
         let accounts: Vec<_> = rows
             .iter()
-            .map(|(i, a, info)| match info {
+            .map(|(i, a, info, expired)| match info {
                 Some(e) => json!({
                     "index": i,
                     "ss58": a.to_string(),
-                    "authorized": true,
+                    "authorized": !expired,
+                    "expired": expired,
                     "transactions": e.transactions,
                     "transactions_allowance": e.transactions_allowance,
                     "bytes": e.bytes,
@@ -473,18 +480,19 @@ async fn pool_status(env: &Env, pool_source: pool::PoolSource) -> Result<()> {
             "accounts": accounts,
         }));
     } else {
-        for (i, a, info) in &rows {
+        for (i, a, info, expired) in &rows {
             let addr = ui::ellipsize(&a.to_string());
             match info {
                 Some(e) => ui::kv(
                     &format!("//deploy/{i}"),
                     format!(
-                        "{addr}  txs {}/{} · bytes {}/{} · exp #{}",
+                        "{addr}  txs {}/{} · bytes {}/{} · exp #{}{}",
                         e.transactions,
                         e.transactions_allowance,
                         e.bytes,
                         e.bytes_allowance,
-                        e.expiration
+                        e.expiration,
+                        if *expired { "  ✗ EXPIRED" } else { "" }
                     ),
                 ),
                 None => ui::kv(
@@ -520,7 +528,11 @@ async fn pool_authorize(
 
 /// Authorize every account of `p` for Bulletin storage in one `utility.batch_all`.
 /// Signs with the caller's `--mnemonic`/`--derivation-path` when given, otherwise the
-/// testnet Authorizer `//Alice`. Idempotent: already-authorized accounts are skipped.
+/// testnet Authorizer `//Alice`. Idempotent on *still-valid* authorizations: an
+/// account is (re)authorized when it has no authorization or its authorization has
+/// **expired** (expiry block already passed) — a bare presence check would leave an
+/// expired pool stuck, since the record lingers on-chain but no longer grants free
+/// storage (stores then fail with "balance too low").
 async fn authorize_pool(
     env: &Env,
     p: &pool::Pool,
@@ -539,14 +551,29 @@ async fn authorize_pool(
     };
 
     let client = bulletin::bulletin_client(env).await?;
+    let current_block = client.at_current_block().await?.block_number();
 
     ui::step("check existing authorizations");
     let mut pending = Vec::new();
     for (i, a) in &accts {
-        if bulletin::is_authorized(&client, a).await? {
-            ui::kv(&format!("//deploy/{i}"), "already authorized");
-        } else {
-            pending.push(a.clone());
+        match bulletin::authorization(&client, a).await? {
+            Some(info) if u64::from(info.expiration) > current_block => {
+                ui::kv(
+                    &format!("//deploy/{i}"),
+                    format!("already authorized (expires #{})", info.expiration),
+                );
+            }
+            Some(info) => {
+                ui::kv(
+                    &format!("//deploy/{i}"),
+                    format!("expired at #{} → re-authorizing", info.expiration),
+                );
+                pending.push(*a);
+            }
+            None => {
+                ui::kv(&format!("//deploy/{i}"), "unauthorized → authorizing");
+                pending.push(*a);
+            }
         }
     }
 
@@ -559,7 +586,7 @@ async fn authorize_pool(
             }));
         } else {
             ui::success(format!(
-                "all {} pool accounts already authorized",
+                "all {} pool accounts already authorized (unexpired)",
                 accts.len()
             ));
         }

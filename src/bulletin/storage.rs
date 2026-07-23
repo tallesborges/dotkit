@@ -481,7 +481,7 @@ pub async fn authorization(
     client: &OnlineClient<BulletinConfig>,
     who: &AccountId32,
 ) -> Result<Option<AuthInfo>> {
-    let scope = bulletin::runtime_types::pallet_bulletin_transaction_storage::types::AuthorizationScope::Account(who.clone());
+    let scope = bulletin::runtime_types::pallet_bulletin_transaction_storage::types::AuthorizationScope::Account(*who);
     let address = bulletin::storage().transaction_storage().authorizations();
     let at = client.at_current_block().await?;
     let got = at
@@ -505,14 +505,6 @@ pub async fn authorization(
     }
 }
 
-/// Whether `who` currently holds a Bulletin `TransactionStorage` authorization.
-pub async fn is_authorized(
-    client: &OnlineClient<BulletinConfig>,
-    who: &AccountId32,
-) -> Result<bool> {
-    Ok(authorization(client, who).await?.is_some())
-}
-
 /// Authorize many accounts in a single `utility.batch_all`, signed by an
 /// Authorizer. Atomic: if any inner `authorize_account` fails the whole batch
 /// rolls back. The signer must hold Bulletin Authorizer privileges (else
@@ -529,7 +521,7 @@ pub async fn batch_authorize_accounts(
         .map(|who| {
             bulletin::runtime_types::bulletin_paseo_runtime::RuntimeCall::TransactionStorage(
                 bulletin::runtime_types::pallet_bulletin_transaction_storage::pallet::Call::authorize_account {
-                    who: who.clone(),
+                    who: *who,
                     transactions,
                     bytes,
                 },
