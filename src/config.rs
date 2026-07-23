@@ -227,7 +227,7 @@ mod tests {
             description: "Live TV".into(),
             icon: "icon.png".into(),
         };
-        let cid = crate::bulletin::raw_cid(b"fake-icon-bytes");
+        let cid = crate::bulletin::Hashing::Blake2b256.cid(0x55, b"fake-icon-bytes");
         let json = product.root_manifest_json(&cid).unwrap();
         let expected = format!(
             "{{\"$v\":1,\"displayName\":\"TV Explorer\",\"description\":\"Live TV\",\"icon\":{{\"cid\":\"{cid}\",\"format\":\"png\"}}}}"

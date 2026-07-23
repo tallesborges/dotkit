@@ -21,19 +21,64 @@ use subxt_signer::sr25519::Keypair;
 /// extrinsic can carry.
 pub const MAX_TRANSACTION_SIZE: usize = 2 * 1024 * 1024;
 
+/// Multihash algorithm a blob is stored under. App content uses [`Sha2_256`]
+/// (Kubo's default, byte-exact with native merkleization); product icons use
+/// [`Blake2b256`], which the host's Browse / preimage icon resolver requires —
+/// a `sha2-256` icon CID resolves on the IPFS gateway but not in Browse.
+///
+/// [`Sha2_256`]: Hashing::Sha2_256
+/// [`Blake2b256`]: Hashing::Blake2b256
+#[derive(Clone, Copy)]
+pub enum Hashing {
+    Sha2_256,
+    Blake2b256,
+}
+
+impl Hashing {
+    fn code(self) -> Code {
+        match self {
+            Hashing::Sha2_256 => Code::Sha2_256,
+            Hashing::Blake2b256 => Code::Blake2b256,
+        }
+    }
+
+    /// The runtime `HashingAlgorithm` variant passed in a `CidConfig`.
+    fn runtime(
+        self,
+    ) -> bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::HashingAlgorithm
+    {
+        use bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::HashingAlgorithm as H;
+        match self {
+            Hashing::Sha2_256 => H::Sha2_256,
+            Hashing::Blake2b256 => H::Blake2b256,
+        }
+    }
+
+    /// CIDv1 for `data` under `codec` using this algorithm — the CID the Bulletin
+    /// chain assigns to data stored via `store_with_cid_config`.
+    pub fn cid(self, codec: u64, data: &[u8]) -> Cid {
+        Cid::new_v1(codec, self.code().digest(data))
+    }
+
+    /// The 32-byte digest the chain keys `TransactionByContentHash` by.
+    pub fn content_hash(self, data: &[u8]) -> [u8; 32] {
+        let digest = self.code().digest(data);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(digest.digest());
+        out
+    }
+}
+
 /// CIDv1 (raw codec `0x55`, sha2-256 multihash) of a blob's bytes — the CID the
 /// Bulletin chain assigns to data stored via `store_with_cid_config`.
 pub fn raw_cid(data: &[u8]) -> Cid {
-    Cid::new_v1(0x55, Code::Sha2_256.digest(data))
+    Hashing::Sha2_256.cid(0x55, data)
 }
 
 /// sha2-256 of a blob's bytes; this is the key the chain uses in
 /// `TransactionStorage.TransactionByContentHash`.
 pub fn content_hash(data: &[u8]) -> [u8; 32] {
-    let digest = Code::Sha2_256.digest(data);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(digest.digest());
-    out
+    Hashing::Sha2_256.content_hash(data)
 }
 
 /// Result of storing a single IPLD block via [`store_block`].
@@ -347,17 +392,19 @@ pub async fn store_car_blocks(
 }
 
 /// Store one blob (an IPLD block) on the Bulletin chain under its own content
-/// hash, using the block's `codec` and sha2-256. Idempotent: if the block is
-/// already stored (keyed by `sha256(data)` in `TransactionByContentHash`) it
-/// returns [`StoreOutcome::AlreadyPresent`] without submitting. `data` must be
-/// no larger than the chain's `MaxTransactionSize`; callers guard that.
+/// hash, using the block's `codec` and the given [`Hashing`] algorithm.
+/// Idempotent: if the block is already stored (keyed by the algorithm's digest
+/// in `TransactionByContentHash`) it returns [`StoreOutcome::AlreadyPresent`]
+/// without submitting. `data` must be no larger than the chain's
+/// `MaxTransactionSize`; callers guard that.
 pub async fn store_block(
     client: &OnlineClient<BulletinConfig>,
     signer: &Keypair,
     codec: u64,
+    hashing: Hashing,
     data: &[u8],
 ) -> Result<StoreOutcome> {
-    let content_hash = content_hash(data);
+    let content_hash = hashing.content_hash(data);
 
     let at = client.at_current_block().await?;
     if let Some((block, index)) = stored_location(&at, content_hash).await? {
@@ -368,8 +415,7 @@ pub async fn store_block(
     let cid_config =
         bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::CidConfig {
             codec,
-            hashing:
-                bulletin::runtime_types::bulletin_transaction_storage_primitives::cids::HashingAlgorithm::Sha2_256,
+            hashing: hashing.runtime(),
         };
     let call = bulletin::tx()
         .transaction_storage()

@@ -119,9 +119,16 @@ pub async fn run(
                 bulletin::MAX_TRANSACTION_SIZE
             );
         }
-        let cid = bulletin::raw_cid(&icon_bytes);
+        let cid = bulletin::Hashing::Blake2b256.cid(0x55, &icon_bytes);
         ui::step(format!("upload icon {}", ui::ellipsize(&cid.to_string())));
-        bulletin::store_block(&client, &pool, 0x55, &icon_bytes).await?;
+        bulletin::store_block(
+            &client,
+            &pool,
+            0x55,
+            bulletin::Hashing::Blake2b256,
+            &icon_bytes,
+        )
+        .await?;
         ui::kv("icon", format!("{cid} ({})", product.icon_format()?));
 
         let manifest = product.root_manifest_json(&cid)?;

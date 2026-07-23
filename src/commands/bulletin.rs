@@ -319,10 +319,13 @@ async fn store(
     let client = bulletin::bulletin_client(env).await?;
     let signer = resolve_signer(mnemonic, derivation_path, pool_source)?;
 
-    let (stored, block, index) = match bulletin::store_block(&client, &signer, 0x55, &data).await? {
-        bulletin::StoreOutcome::AlreadyPresent { block, index } => (false, block, index),
-        bulletin::StoreOutcome::Stored { block, index } => (true, block, index),
-    };
+    let (stored, block, index) =
+        match bulletin::store_block(&client, &signer, 0x55, bulletin::Hashing::Sha2_256, &data)
+            .await?
+        {
+            bulletin::StoreOutcome::AlreadyPresent { block, index } => (false, block, index),
+            bulletin::StoreOutcome::Stored { block, index } => (true, block, index),
+        };
 
     if ui::json() {
         ui::emit(&json!({
