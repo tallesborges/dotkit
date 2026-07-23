@@ -1,6 +1,6 @@
 ---
 name: dotkit
-description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — deploying a static build dir to a .dot domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier .dot name, looking up who owns a name or whether it's available, transferring a name you own, resolving or setting a name's contenthash/text records, publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: deploy my app to a .dot with dotkit, dotkit deploy ./dist myapp.dot, register a .dot name, who owns this .dot, transfer a .dot to someone, bind a CID to a .dot, publish my app to Browse, dotkit deploy --publish, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, dotkit deploy --register, what PoP tier does this name need."
+description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — deploying a static build dir to a .dot domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier .dot name, looking up who owns a name or whether it's available, transferring a name you own, resolving or setting a name's contenthash/text records, publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: deploy my app to a .dot with dotkit, dotkit deploy ./dist myapp.dot, register a .dot name, who owns this .dot, transfer a .dot to someone, bind a CID to a .dot, publish my app to Browse, dotkit deploy --publish, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
 ---
 
 # dotkit
@@ -14,7 +14,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 
 | Command | What it does |
 |---|---|
-| `deploy <dir> <domain.dot>` | Merkleize → Bulletin upload → bind `.dot` contenthash. Add `--register` to auto-register an open-tier name; `--publish` to also list it in Browse. |
+| `deploy <dir> <domain.dot>` | Merkleize → Bulletin upload → bind `.dot` contenthash. With a `[product]` `deploy.toml` it also uploads the icon + writes the root `manifest` record. Add `--register` to auto-register an open-tier name; `--publish` to also list it in Browse. |
 | `bulletin store <file>` | Store one blob (≤2 MiB) on Bulletin. |
 | `bulletin store-car <file.car>` | Store every block of a CARv1 so its root resolves. |
 | `bulletin status [--address <ss58>]` | Bulletin authorization / quota for an account. |
@@ -79,9 +79,16 @@ dotkit deploy ./dist myapp.dot --register
 [text]
 manifest = "https://example.com/manifest.json"
 executable = "worker.js"
+
+[product]
+display_name = "TV Explorer"
+description = "10,000+ free live TV channels"
+icon = "icon.png"          # path relative to deploy.toml; PNG or JPEG
 ```
 
 Each `[text]` entry is written via `setText` after the bind. The build dir is never scanned for the config (its files get uploaded).
+
+**`[product]` (generated root manifest).** When `[product]` is present, `deploy` uploads the `icon` to Bulletin (single blob, ≤2 MiB), builds the RFC root manifest `{"$v":1,"displayName","description","icon":{"cid","format"}}`, and writes it as the base name's `manifest` text record — so Browse shows a name + icon, not just a resolvable contenthash. The app's contenthash stays the SPA entry point; no `app.<name>.dot` subname or `executable` records are created (that's for multi-surface widget/worker products). `icon.format` is inferred from the extension (`.png`→`png`, `.jpg`/`.jpeg`→`jpeg`); other extensions are rejected. `[product]` **generates** the `manifest` record, so a config that also sets a manual `[text].manifest` is rejected as a conflicting source of truth. Writing the manifest is automatic on deploy; Browse discovery still needs explicit `--publish` (personhood-gated + rate-limited).
 
 ## Browse listing (Publisher)
 

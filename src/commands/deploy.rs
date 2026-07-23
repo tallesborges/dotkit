@@ -22,7 +22,8 @@ pub struct Args {
     /// Merkleize with the Kubo `ipfs` binary instead of the native encoder (fallback).
     #[arg(long)]
     pub kubo: bool,
-    /// Deploy manifest with text records to write (defaults to ./deploy.toml if present).
+    /// Deploy manifest: text records + optional [product] metadata to write
+    /// (defaults to ./deploy.toml if present).
     #[arg(long)]
     pub config: Option<String>,
     /// Register the domain (open-tier) if it isn't already owned by the signer.
@@ -105,6 +106,31 @@ pub async fn run(
         );
     }
 
+    let mut icon_cid = None;
+    if let Some(product) = &config.product {
+        let icon_path = product.icon_path(&config.base_dir);
+        let icon_bytes = std::fs::read(&icon_path)
+            .with_context(|| format!("reading [product] icon {}", icon_path.display()))?;
+        if icon_bytes.len() > bulletin::MAX_TRANSACTION_SIZE {
+            bail!(
+                "[product] icon {} is {} bytes, exceeding the chain's MaxTransactionSize of {} bytes (2 MiB)",
+                icon_path.display(),
+                icon_bytes.len(),
+                bulletin::MAX_TRANSACTION_SIZE
+            );
+        }
+        let cid = bulletin::raw_cid(&icon_bytes);
+        ui::step(format!("upload icon {}", ui::ellipsize(&cid.to_string())));
+        bulletin::store_block(&client, &pool, 0x55, &icon_bytes).await?;
+        ui::kv("icon", format!("{cid} ({})", product.icon_format()?));
+
+        let manifest = product.root_manifest_json(&cid)?;
+        ui::step(format!("set 'manifest' on {domain}"));
+        dotns::set_text(&asset_hub, env, &owner, &domain, "manifest", &manifest).await?;
+        ui::kv("manifest", ui::ellipsize(&manifest));
+        icon_cid = Some(cid);
+    }
+
     for (key, value) in &config.text {
         ui::step(format!("set '{key}' on {domain}"));
         dotns::set_text(&asset_hub, env, &owner, &domain, key, value).await?;
@@ -134,12 +160,18 @@ pub async fn run(
             "content": content_cid.to_string(),
             "url": url,
             "published": published,
+            "icon": icon_cid.map(|c| c.to_string()),
+            "manifest": icon_cid.is_some(),
             "blocks": { "stored": stored.stored, "skipped": stored.skipped },
         }));
     } else {
         println!();
         ui::success(format!("deployed {domain}"));
         ui::kv("content", content_cid);
+        if let Some(cid) = icon_cid {
+            ui::kv("icon", cid);
+            ui::kv("manifest", "written");
+        }
         if let Some(url) = url {
             ui::kv("url", url);
         }
