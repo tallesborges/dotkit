@@ -75,7 +75,7 @@ pub async fn store_prepared_blocks(
     let total = prepared.len();
     let (stored, skipped) = storage::store_car_blocks(
         client,
-        env.bulletin_rpc,
+        env.bulletin_rpc()?,
         signer,
         &prepared,
         |done, stored, skipped| {

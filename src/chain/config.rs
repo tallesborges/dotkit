@@ -190,6 +190,23 @@ impl subxt::Config for BulletinConfig {
 /// `RestrictOrigins`) and encode their inert default, `AuthorizeCall`/
 /// `EthSetOrigin` are empty. `ChargeAssetTxPayment` pays fees in the native
 /// token (tip 0, `asset_id: None`).
+///
+/// **This tuple does not have to match a chain's declared set exactly.** Encoding
+/// is driven by the chain's own metadata: subxt picks the extension version from
+/// `metadata.extrinsic().transaction_extension_version_to_use_for_encoding()` and
+/// then looks each required extension up **by name** in this tuple. So envs whose
+/// runtime declares extra extensions still work, as long as this tuple names
+/// everything the chosen version actually requires.
+///
+/// Verified live 2026-08-12 — this exact tuple signs successfully on both:
+/// - **paseo-next-v2**: declares these 17.
+/// - **PreviewNet**: declares 18 (adds `AsScarcity` + `UnitTransactionExtension`),
+///   yet `name register` + `content set` + `Balances.transfer_keep_alive` all
+///   succeed unchanged.
+///
+/// Do not "fix" a signing failure by adding names here without measuring first: an
+/// `InvalidTransaction::Stale` from these chains is almost always a nonce race on
+/// the shared dev account, not an extension mismatch.
 type AssetHubTxExtensions = (
     AuthorizeValueTransfer,
     AuthorizeCall,

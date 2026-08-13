@@ -1,7 +1,7 @@
 //! Optional `deploy.toml`: DotNS metadata written alongside a deploy — raw
 //! text records (`[text]`, e.g. `manifest`, `executable`) plus an optional
 //! `[product]` section that generates the RFC root manifest (display name,
-//! description, Bulletin-hosted icon) for the base `.dot` name.
+//! description, Bulletin-hosted icon) for the base DotNS name.
 
 use anyhow::{bail, Context, Result};
 use cid::Cid;

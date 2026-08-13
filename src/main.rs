@@ -54,7 +54,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Deploy a static app: merkleize -> Bulletin -> bind .dot contenthash (MVP).
+    /// Deploy a static app: merkleize -> Bulletin -> bind the DotNS contenthash (MVP).
     Deploy(commands::deploy::Args),
     /// Bulletin chain storage ops.
     #[command(subcommand)]

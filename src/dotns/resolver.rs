@@ -87,14 +87,22 @@ pub fn contenthash_to_cid(contenthash: &[u8]) -> Result<String> {
     Ok(cid.to_string())
 }
 
-/// Normalize a user-supplied name: lowercase and ensure a trailing `.dot`.
-pub fn normalize_name(name: &str) -> String {
+/// Normalize a user-supplied name: lowercase and ensure a trailing `.<tld>`.
+/// `tld` comes from the selected [`crate::env::Env`] — Paseo v2 is `paseo`,
+/// PreviewNet is still `dot`.
+pub fn normalize_name(name: &str, tld: &str) -> String {
     let lower = name.trim().to_lowercase();
-    if lower.ends_with(".dot") {
+    let suffix = format!(".{tld}");
+    if lower.ends_with(&suffix) {
         lower
     } else {
-        format!("{lower}.dot")
+        format!("{lower}{suffix}")
     }
+}
+
+/// The bare label of a name: `.<tld>` stripped if present, otherwise unchanged.
+pub fn strip_tld<'a>(name: &'a str, tld: &str) -> &'a str {
+    name.strip_suffix(&format!(".{tld}")).unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -128,9 +136,28 @@ mod tests {
     }
 
     #[test]
-    fn normalize_appends_dot() {
-        assert_eq!(normalize_name("host-playground"), "host-playground.dot");
-        assert_eq!(normalize_name("HOST-Playground.DOT"), "host-playground.dot");
+    fn normalize_appends_env_tld() {
+        assert_eq!(
+            normalize_name("host-playground", "paseo"),
+            "host-playground.paseo"
+        );
+        assert_eq!(
+            normalize_name("HOST-Playground.PASEO", "paseo"),
+            "host-playground.paseo"
+        );
+        assert_eq!(
+            normalize_name("host-playground", "dot"),
+            "host-playground.dot"
+        );
+    }
+
+    #[test]
+    fn strip_tld_only_strips_the_env_tld() {
+        assert_eq!(strip_tld("dotshare.paseo", "paseo"), "dotshare");
+        assert_eq!(strip_tld("dotshare", "paseo"), "dotshare");
+        // A `.dot` name is not a `.paseo` name — leave it alone rather than
+        // silently registering the wrong label.
+        assert_eq!(strip_tld("dotshare.dot", "paseo"), "dotshare.dot");
     }
 
     #[test]

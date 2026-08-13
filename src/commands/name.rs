@@ -10,62 +10,62 @@ use subxt::utils::H160;
 
 #[derive(Subcommand)]
 pub enum Cmd {
-    /// Resolve a .dot name to its contenthash CID.
+    /// Resolve a DotNS name to its contenthash CID.
     Resolve {
-        /// The .dot name (e.g. myapp00.dot).
+        /// The name; the env's TLD is appended when omitted (e.g. myapp00.paseo).
         name: String,
     },
-    /// Show whether a .dot name is registered and who owns it.
+    /// Show whether a DotNS name is registered and who owns it.
     #[command(name = "owner-of", alias = "oo")]
     OwnerOf {
-        /// The .dot name (e.g. myapp00.dot).
+        /// The name; the env's TLD is appended when omitted (e.g. myapp00.paseo).
         name: String,
     },
-    /// Read-only overview of a .dot name (owner, tier, price, contenthash).
+    /// Read-only overview of a DotNS name (owner, tier, price, contenthash).
     Lookup {
-        /// The .dot name (e.g. myapp00.dot).
+        /// The name; the env's TLD is appended when omitted (e.g. myapp00.paseo).
         name: String,
     },
-    /// Register an open-tier .dot name (commit/reveal) to the signer.
+    /// Register an open-tier DotNS name (commit/reveal) to the signer.
     Register {
-        /// The .dot name to register (e.g. myapp00.dot).
+        /// The name to register; the env's TLD is appended when omitted.
         name: String,
     },
-    /// Transfer a .dot name you own to another account (0x H160 or SS58).
+    /// Transfer a DotNS name you own to another account (0x H160 or SS58).
     Transfer {
-        /// The .dot name to transfer (must be owned by the signer).
+        /// The name to transfer (must be owned by the signer).
         name: String,
         /// Recipient address: a 0x-prefixed H160 or an SS58 address.
         to: String,
     },
-    /// List a .dot name in Browse via the Publisher registry (paseo-next-v2).
+    /// List a DotNS name in Browse via the Publisher registry.
     Publish {
-        /// The .dot name to publish (must be owned by the signer).
+        /// The name to publish (must be owned by the signer).
         name: String,
     },
-    /// Remove a .dot name from Browse via the Publisher registry (paseo-next-v2).
+    /// Remove a DotNS name from Browse via the Publisher registry.
     Unpublish {
-        /// The .dot name to unpublish (must be owned by the signer).
+        /// The name to unpublish (must be owned by the signer).
         name: String,
     },
-    /// Read or set a .dot name's raw contenthash record.
+    /// Read or set a DotNS name's raw contenthash record.
     #[command(subcommand)]
     Content(ContentCmd),
-    /// Read or set a .dot name's text records (e.g. manifest, executable).
+    /// Read or set a DotNS name's text records (e.g. manifest, executable).
     #[command(subcommand)]
     Text(TextCmd),
 }
 
 #[derive(Subcommand)]
 pub enum ContentCmd {
-    /// Bind a CID to a .dot name's contenthash record (signed Revive.call).
+    /// Bind a CID to a DotNS name's contenthash record (signed Revive.call).
     Set {
-        /// The .dot name (must be owned by the signer).
+        /// The name (must be owned by the signer).
         name: String,
         /// The CIDv1 to bind (e.g. bafy...).
         cid: String,
     },
-    /// Read the raw contenthash record of a .dot name (`asset-hub name content <name>`).
+    /// Read the raw contenthash record of a DotNS name (`asset-hub name content <name>`).
     #[command(external_subcommand)]
     Read(Vec<String>),
 }
@@ -74,14 +74,14 @@ pub enum ContentCmd {
 pub enum TextCmd {
     /// Read a text record (e.g. `asset-hub name text get myapp00 manifest`).
     Get {
-        /// The .dot name.
+        /// The name.
         name: String,
         /// Record key (e.g. manifest, executable, url).
         key: String,
     },
-    /// Set a text record on a .dot name (signed Revive.call).
+    /// Set a text record on a DotNS name (signed Revive.call).
     Set {
-        /// The .dot name (must be owned by the signer).
+        /// The name (must be owned by the signer).
         name: String,
         /// Record key (e.g. manifest, executable).
         key: String,
@@ -98,7 +98,7 @@ pub async fn run(
 ) -> Result<()> {
     match cmd {
         Cmd::Resolve { name } => {
-            let name = dotns::normalize_name(&name);
+            let name = dotns::normalize_name(&name, &env.tld);
             let client = chain::asset_hub_client(env).await?;
             let contenthash = dotns::resolve_contenthash(&client, env, &name).await?;
             let cid = if contenthash.is_empty() {
@@ -135,7 +135,7 @@ pub async fn run(
         }
         Cmd::Content(ContentCmd::Read(args)) => {
             let raw = args.first().context("usage: name content <name>")?;
-            let name = dotns::normalize_name(raw);
+            let name = dotns::normalize_name(raw, &env.tld);
             let client = chain::asset_hub_client(env).await?;
             let contenthash = dotns::resolve_contenthash(&client, env, &name).await?;
             let hex = (!contenthash.is_empty()).then(|| format!("0x{}", hex::encode(&contenthash)));
@@ -152,7 +152,7 @@ pub async fn run(
             set(env, &name, &cid, mnemonic, derivation_path).await?;
         }
         Cmd::Text(TextCmd::Get { name, key }) => {
-            let name = dotns::normalize_name(&name);
+            let name = dotns::normalize_name(&name, &env.tld);
             let client = chain::asset_hub_client(env).await?;
             let value = dotns::resolve_text(&client, env, &name, &key).await?;
             if ui::json() {
@@ -171,7 +171,7 @@ pub async fn run(
 }
 
 async fn owner_of(env: &Env, name: &str) -> Result<()> {
-    let name = dotns::normalize_name(name);
+    let name = dotns::normalize_name(name, &env.tld);
     let client = chain::asset_hub_client(env).await?;
     let owner = dotns::name_owner(&client, env, &name).await?;
     let owner_hex = owner.map(|o| format!("0x{}", hex::encode(o.0)));
@@ -196,7 +196,7 @@ async fn owner_of(env: &Env, name: &str) -> Result<()> {
 }
 
 async fn lookup(env: &Env, name: &str) -> Result<()> {
-    let name = dotns::normalize_name(name);
+    let name = dotns::normalize_name(name, &env.tld);
     let client = chain::asset_hub_client(env).await?;
 
     let owner = dotns::name_owner(&client, env, &name).await?;
@@ -262,7 +262,7 @@ async fn register(
     mnemonic: Option<String>,
     derivation_path: Option<String>,
 ) -> Result<()> {
-    let name = dotns::normalize_name(name);
+    let name = dotns::normalize_name(name, &env.tld);
     let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
 
     let (owner, value_native) = dotns::register_name(env, &signer, &name).await?;
@@ -289,7 +289,7 @@ async fn transfer(
     mnemonic: Option<String>,
     derivation_path: Option<String>,
 ) -> Result<()> {
-    let name = dotns::normalize_name(name);
+    let name = dotns::normalize_name(name, &env.tld);
     let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
 
     let outcome = dotns::transfer_name(env, &signer, &name, to).await?;
@@ -327,14 +327,14 @@ async fn publish(
     let verb = if publish { "published" } else { "unpublished" };
     if ui::json() {
         ui::emit(&json!({
-            "name": dotns::normalize_name(name),
+            "name": dotns::normalize_name(name, &env.tld),
             "label": outcome.label,
             "published": publish,
             "publisher": format!("0x{}", hex::encode(outcome.publisher.0)),
             "tx": format!("0x{}", hex::encode(outcome.tx)),
         }));
     } else {
-        ui::success(format!("{verb} {}.dot", outcome.label));
+        ui::success(format!("{verb} {}.{}", outcome.label, env.tld));
         ui::kv("tx", format!("0x{}", hex::encode(outcome.tx)));
     }
     Ok(())
@@ -347,7 +347,7 @@ async fn set(
     mnemonic: Option<String>,
     derivation_path: Option<String>,
 ) -> Result<()> {
-    let name = dotns::normalize_name(name);
+    let name = dotns::normalize_name(name, &env.tld);
     let cid = Cid::try_from(cid).with_context(|| format!("invalid CID '{cid}'"))?;
     let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
 
@@ -380,7 +380,7 @@ async fn text_set(
     mnemonic: Option<String>,
     derivation_path: Option<String>,
 ) -> Result<()> {
-    let name = dotns::normalize_name(name);
+    let name = dotns::normalize_name(name, &env.tld);
     let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
 
     ui::step(format!("set '{key}' on {name}"));

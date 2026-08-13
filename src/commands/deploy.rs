@@ -14,7 +14,8 @@ use std::process::Command;
 pub struct Args {
     /// Build directory to deploy (e.g. ./dist).
     pub dir: String,
-    /// Target .dot domain (e.g. myapp00.dot).
+    /// Target DotNS domain (e.g. myapp00.paseo on paseo-next-v2). The env's TLD
+    /// is appended when omitted.
     pub domain: String,
     /// Deploy a pre-built CAR instead of merkleizing the directory.
     #[arg(long)]
@@ -30,7 +31,7 @@ pub struct Args {
     #[arg(long)]
     pub register: bool,
     /// After deploy, list the domain in Browse via the Publisher registry
-    /// (paseo-next-v2 only; signer must own the label).
+    /// (signer must own the label).
     #[arg(long)]
     pub publish: bool,
     /// Make a `--publish` failure hard-fail the command (default: warn, exit 0).
@@ -45,7 +46,7 @@ pub async fn run(
     derivation_path: Option<String>,
     pool_source: crate::pool::PoolSource,
 ) -> Result<()> {
-    let domain = dotns::normalize_name(&args.domain);
+    let domain = dotns::normalize_name(&args.domain, &env.tld);
     let config = DeployConfig::load(args.config.as_deref())?;
 
     let owner = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
@@ -159,7 +160,7 @@ pub async fn run(
         }
     }
 
-    let label = domain.strip_suffix(".dot").unwrap_or(&domain);
+    let label = dotns::strip_tld(&domain, &env.tld);
     let url = (!env.web_gateway.is_empty()).then(|| format!("https://{label}.{}", env.web_gateway));
     if ui::json() {
         ui::emit(&serde_json::json!({

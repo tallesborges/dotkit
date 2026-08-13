@@ -2,7 +2,7 @@
 
 A fast single-binary Rust CLI for the Polkadot **Triangle/Trinity** ecosystem — **Bulletin** storage and **DotNS** naming (Asset Hub / `pallet_revive`).
 
-The first-class command is `dotkit deploy`, a native replacement for the existing Node-based deploy + `.dot` naming CLIs: it merkleizes a build directory, uploads the DAG to the Bulletin chain, and binds the content CID to a `.dot` domain — all from one static binary with no Node/Bun runtime and no `ipfs` daemon.
+The first-class command is `dotkit deploy`, a native replacement for the existing Node-based deploy + DotNS naming CLIs: it merkleizes a build directory, uploads the DAG to the Bulletin chain, and binds the content CID to a DotNS domain — all from one static binary with no Node/Bun runtime and no `ipfs` daemon.
 
 ## Why
 
@@ -45,25 +45,25 @@ Or use Cargo directly: `cargo install --path .` (or `just install`) puts `dotkit
 
 ## Quickstart
 
-Deploy a built site to a `.dot` domain you own:
+Deploy a built site to a DotNS domain you own:
 
 ```sh
-dotkit deploy ./dist myapp.dot
+dotkit deploy ./dist myapp.paseo
 ```
 
-This merkleizes `./dist`, uploads every block to Bulletin, sets the contenthash on `myapp.dot`, and prints the gateway + `https://myapp.paseo.li` URL.
+This merkleizes `./dist`, uploads every block to Bulletin, sets the contenthash on `myapp.paseo`, and prints the gateway + `https://myapp.paseo.li` URL.
 
 Register the name first if you need one — or add `--register` to the `deploy` command above to do it in one step:
 
 ```sh
-dotkit asset-hub name register myapp.dot
+dotkit asset-hub name register myapp.paseo
 ```
 
 ## Command surface
 
 | Command | What it does |
 |---|---|
-| `deploy <dir> <domain.dot>` | Merkleize → Bulletin upload → bind `.dot` contenthash (the MVP flow). |
+| `deploy <dir> <domain>` | Merkleize → Bulletin upload → bind the DotNS contenthash (the MVP flow). |
 | `bulletin store <file>` | Store a single blob (≤2 MiB) on Bulletin. |
 | `bulletin store-car <file.car>` | Store every block of a CARv1 so its root resolves. |
 | `bulletin status [--address <ss58>]` | Show authorization / quota for an account. |
@@ -71,15 +71,15 @@ dotkit asset-hub name register myapp.dot
 | `bulletin authorize [--address <ss58>] [--transactions N] [--bytes N]` | Grant an account Bulletin storage quota (signer needs Authorizer privileges). |
 | `asset-hub transfer <dest> <plancks>` | Send native PAS on Asset Hub. |
 | `asset-hub map` | Ensure the signer has an H160 mapping (`Revive.map_account`). |
-| `asset-hub name resolve <name.dot>` | Resolve a name to its contenthash CID. |
-| `asset-hub name owner-of <name.dot>` | Show whether a name is registered and who owns it. |
-| `asset-hub name lookup <name.dot>` | Read-only overview: owner, required tier + status, base price, contenthash. |
-| `asset-hub name register <name.dot>` | Register a name (commit/reveal) — open, or Lite/Full with a personhood-verified signer. |
-| `asset-hub name transfer <name.dot> <to>` | Transfer a name you own to `<to>` (0x H160 or SS58); pays the quoted friction fee. |
-| `asset-hub name content set <name.dot> <cid>` | Bind a CID to a name's contenthash. |
-| `asset-hub name content <name.dot>` | Read a name's raw contenthash record. |
-| `asset-hub name text set <name.dot> <key> <value>` | Set a text record (e.g. `manifest`, `executable`). |
-| `asset-hub name text get <name.dot> <key>` | Read a text record. |
+| `asset-hub name resolve <name>` | Resolve a name to its contenthash CID. |
+| `asset-hub name owner-of <name>` | Show whether a name is registered and who owns it. |
+| `asset-hub name lookup <name>` | Read-only overview: owner, required tier + status, base price, contenthash. |
+| `asset-hub name register <name>` | Register a name (commit/reveal) — open, or Lite/Full with a personhood-verified signer. |
+| `asset-hub name transfer <name> <to>` | Transfer a name you own to `<to>` (0x H160 or SS58); pays the quoted friction fee. |
+| `asset-hub name content set <name> <cid>` | Bind a CID to a name's contenthash. |
+| `asset-hub name content <name>` | Read a name's raw contenthash record. |
+| `asset-hub name text set <name> <key> <value>` | Set a text record (e.g. `manifest`, `executable`). |
+| `asset-hub name text get <name> <key>` | Read a text record. |
 | `account env` | Print the resolved environment config. |
 | `account whoami` | Derive the signer and prove Asset Hub + Bulletin connectivity. |
 | `account info` | Show the signer's Asset Hub native (PAS) balance. |
@@ -105,8 +105,35 @@ dotkit asset-hub name register myapp.dot
 
 | `--env` | Bulletin + Asset Hub | Notes |
 |---|---|---|
-| `paseo-next-v2` (default) | Paseo Next v2 | Full support; resolves at `<name>.paseo.li`. |
-| `preview` | PreviewNet | Partial — `asset-hub name register` is not yet wired. |
+| `paseo-next-v2` (default) | Paseo Next v2 | TLD `.paseo`; full support; resolves at `<name>.paseo.li`. |
+| `preview` | PreviewNet | TLD `.dot` (until its next wipe); same CREATE3 contract set as Paseo v2. |
+
+Both are verified live. The table is data, not code: built-in defaults live in
+`assets/envs.toml` (compiled into the binary) and are overlaid by `~/.dotkit/envs.toml`,
+merged **by id**. An existing id patches only the fields you list; a new id adds an
+environment. No rebuild needed.
+
+```toml
+# ~/.dotkit/envs.toml
+
+# patch one field of a built-in env
+[paseo-next-v2]
+publisher = "0x…"
+
+# or define a whole environment
+[mynet]
+tld = "test"
+asset_hub_rpc = "ws://127.0.0.1:9944"
+bulletin_rpc  = "ws://127.0.0.1:9945"
+```
+
+Only environments that can be defined centrally and have been verified against a live
+chain ship in the binary; anything machine-local, or whose endpoints aren't published
+upstream, belongs in the overlay.
+
+`dotkit account env --list` shows every env and whether it came from the built-in table,
+your overlay, or both. Only `tld` is required for a new env — missing endpoints and
+addresses are reported in context by the command that needs them.
 
 ## Bulletin upload pools
 
@@ -138,10 +165,10 @@ dotkit bulletin pool init
 #   --skip-authorize    only generate the keystore; authorize later
 
 # From now on, deploys auto-use your private pool (a keystore now exists):
-dotkit deploy ./dist myapp.dot
+dotkit deploy ./dist myapp.paseo
 # ...or force one explicitly:
-dotkit deploy ./dist myapp.dot --pool local     # your private pool
-dotkit deploy ./dist myapp.dot --pool shared    # the shared dev pool
+dotkit deploy ./dist myapp.paseo --pool local     # your private pool
+dotkit deploy ./dist myapp.paseo --pool shared    # the shared dev pool
 ```
 
 `pool init` authorizes the accounts on-chain in the same step, signed by the testnet Authorizer `//Alice` by default (override with `--mnemonic`/`--derivation-path`). Two more commands help you inspect/repair the pool:
@@ -169,4 +196,4 @@ DOTKIT_COMPARE_DIR=./dist cargo test -- --ignored compare_env
 
 ## Status
 
-The `deploy` MVP is built and live-verified end-to-end on `paseo-next-v2`, including auto-register (`--register`), Lite/Full personhood-gated registration (with a pre-commit personhood check), text records via `deploy.toml`, native merkleization (golden-tested for byte-exact Kubo parity), reliable commit/reveal, and decoded on-chain revert reasons. Remaining work: a chunked path for single blobs larger than 2 MiB, and full `preview`-env contract addresses.
+The `deploy` MVP is built and live-verified end-to-end on `paseo-next-v2`, including auto-register (`--register`), Lite/Full personhood-gated registration (with a pre-commit personhood check), text records via `deploy.toml`, native merkleization (golden-tested for byte-exact Kubo parity), reliable commit/reveal, and decoded on-chain revert reasons. Remaining work: a chunked path for single blobs larger than 2 MiB.

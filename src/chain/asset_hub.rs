@@ -13,7 +13,7 @@ use subxt_signer::sr25519::Keypair;
 /// extrinsics carry the full 17-extension payload the runtime expects. The
 /// client's metadata cache is pre-seeded from the persistent on-disk cache.
 pub async fn asset_hub_client(env: &Env) -> Result<OnlineClient<AssetHubConfig>> {
-    connect_with_cache(env.asset_hub_rpc, |metadata_cache| AssetHubConfig {
+    connect_with_cache(env.asset_hub_rpc()?, |metadata_cache| AssetHubConfig {
         metadata_cache,
     })
     .await

@@ -143,7 +143,7 @@ async fn connect_bulletin(rpc_url: &str) -> Result<OnlineClient<BulletinConfig>>
 /// metadata cache is pre-seeded from the persistent on-disk cache, so an
 /// unchanged runtime is served from disk with no metadata download.
 pub async fn bulletin_client(env: &Env) -> Result<OnlineClient<BulletinConfig>> {
-    connect_bulletin(env.bulletin_rpc).await
+    connect_bulletin(env.bulletin_rpc()?).await
 }
 
 /// Read `TransactionByContentHash` at `at` and decode the stored `(block, index)`

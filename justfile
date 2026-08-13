@@ -61,7 +61,7 @@ whoami:
 env:
     dotkit account env
 
-# Resolve a .dot name to its content CID, e.g. `just resolve host-playground.dot`
+# Resolve a DotNS name to its content CID, e.g. `just resolve host-playground.paseo`
 resolve name:
     dotkit asset-hub name resolve {{name}}
 
@@ -71,15 +71,15 @@ status:
 
 # ── Signed shortcuts (testnet dev accounts) ──────────────────────────────────
 
-# Deploy a folder to a domain you own. Usage: `just deploy ./dist myname.dot [//Alice]`
+# Deploy a folder to a domain you own. Usage: `just deploy ./dist myname.paseo [//Alice]`
 deploy dir domain path="//Alice":
     MNEMONIC="{{dev_phrase}}" dotkit deploy {{dir}} {{domain}} --derivation-path {{path}}
 
-# Register an open-tier name to a dev account. Usage: `just register myname.dot [//Alice]`
+# Register an open-tier name to a dev account. Usage: `just register myname.paseo [//Alice]`
 register name path="//Alice":
     MNEMONIC="{{dev_phrase}}" dotkit asset-hub name register {{name}} --derivation-path {{path}}
 
-# Point an owned name at an existing CID. Usage: `just set myname.dot <cid> [//Alice]`
+# Point an owned name at an existing CID. Usage: `just set myname.paseo <cid> [//Alice]`
 set name cid path="//Alice":
     MNEMONIC="{{dev_phrase}}" dotkit asset-hub name content set {{name}} {{cid}} --derivation-path {{path}}
 

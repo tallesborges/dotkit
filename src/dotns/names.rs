@@ -23,7 +23,7 @@ use subxt::utils::{AccountId32, H160};
 use subxt::OnlineClient;
 use subxt_signer::sr25519::Keypair;
 
-/// Read a `.dot` name's raw DotNS contenthash bytes (EIP-1577, e.g. `0xe301…`)
+/// Read a DotNS name's raw contenthash bytes (EIP-1577, e.g. `0xe301…`)
 /// by dry-running the resolver's `contenthash(bytes32)` view via `ReviveApi.call`
 /// on the given Asset Hub client. Returns empty when no contenthash is set.
 /// `name` must be normalized already.
@@ -34,7 +34,7 @@ pub async fn resolve_contenthash(
 ) -> Result<Vec<u8>> {
     let node = dotns::namehash(name);
     let input_data = dotns::encode_contenthash_call(node);
-    let dest = parse_h160(env.dotns_content_resolver)?;
+    let dest = parse_h160(&env.dotns_content_resolver)?;
     let origin = account_id(&build_signer(None, None)?);
 
     let call = asset_hub::runtime_apis()
@@ -61,7 +61,7 @@ pub async fn resolve_contenthash(
     dotns::decode_contenthash_return(&exec.data)
 }
 
-/// Bind a normalized `.dot` `name` to `cid` by submitting a signed
+/// Bind a normalized DotNS `name` to `cid` by submitting a signed
 /// `setContenthash(node, 0xe301 ++ cid)` to the env's DotNS content resolver on
 /// the given Asset Hub client. Returns the raw contenthash bytes that were set
 /// (for read-back verification).
@@ -75,14 +75,14 @@ pub async fn set_contenthash(
     let node = dotns::namehash(name);
     let contenthash = dotns::cid_to_contenthash(cid);
     let calldata = dotns::encode_set_contenthash_call(node, &contenthash);
-    let dest = parse_h160(env.dotns_content_resolver)?;
+    let dest = parse_h160(&env.dotns_content_resolver)?;
 
     let block = revive_call(client, signer, dest, 0, calldata).await?;
     ui::kv("tx", format!("0x{}", hex::encode(block)));
     Ok(contenthash)
 }
 
-/// Read a `.dot` name's `key` text record via the resolver's `text(bytes32,string)`
+/// Read a DotNS name's `key` text record via the resolver's `text(bytes32,string)`
 /// dry-run. Empty string when unset. `name` must be normalized.
 pub async fn resolve_text(
     client: &OnlineClient<AssetHubConfig>,
@@ -92,14 +92,14 @@ pub async fn resolve_text(
 ) -> Result<String> {
     let node = dotns::namehash(name);
     let calldata = dotns::encode_text_call(node, key);
-    let dest = parse_h160(env.dotns_content_resolver)?;
+    let dest = parse_h160(&env.dotns_content_resolver)?;
     let origin = account_id(&build_signer(None, None)?);
 
     let data = revive_view(client, origin, dest, 0, calldata).await?;
     dotns::decode_text_return(&data)
 }
 
-/// Set a `.dot` name's `key` text record via a signed `setText`. Returns the
+/// Set a DotNS name's `key` text record via a signed `setText`. Returns the
 /// finalized extrinsic hash. `name` must be normalized.
 pub async fn set_text(
     client: &OnlineClient<AssetHubConfig>,
@@ -111,14 +111,14 @@ pub async fn set_text(
 ) -> Result<[u8; 32]> {
     let node = dotns::namehash(name);
     let calldata = dotns::encode_set_text_call(node, key, value);
-    let dest = parse_h160(env.dotns_content_resolver)?;
+    let dest = parse_h160(&env.dotns_content_resolver)?;
 
     let block = revive_call(client, signer, dest, 0, calldata).await?;
     ui::kv("tx", format!("0x{}", hex::encode(block)));
     Ok(block)
 }
 
-/// DotNS Registry owner of a normalized `.dot` `name`, or `None` if unregistered
+/// DotNS Registry owner of a normalized `name`, or `None` if unregistered
 /// (ENS `owner(bytes32)` maps unknown nodes to the zero address). Needs `env.registry`.
 pub async fn name_owner(
     client: &OnlineClient<AssetHubConfig>,
@@ -126,24 +126,24 @@ pub async fn name_owner(
     name: &str,
 ) -> Result<Option<H160>> {
     let node = dotns::namehash(name);
-    let registry = parse_h160(env.registry)?;
+    let registry = parse_h160(&env.registry)?;
     let origin = account_id(&build_signer(None, None)?);
     let data = revive_view(client, origin, registry, 0, registrar::encode_owner(node)).await?;
     let owner = registrar::decode_owner(&data)?;
     Ok((owner.0 != [0u8; 20]).then_some(owner))
 }
 
-/// Classify a `.dot` `name` via the PoP rules' `classifyName`, returning the
+/// Classify a DotNS `name` via the PoP rules' `classifyName`, returning the
 /// required personhood `(tier, status)` where `status` is a human availability
 /// string. Reverts (surfaced to the caller) for labels that break the digit-suffix
-/// rule. `name` may be with or without the `.dot` suffix.
+/// rule. `name` may be with or without the env's TLD suffix.
 pub async fn classify_name(
     client: &OnlineClient<AssetHubConfig>,
     env: &Env,
     name: &str,
 ) -> Result<(u8, String)> {
-    let label = name.strip_suffix(".dot").unwrap_or(name);
-    let pop_rules = parse_h160(env.pop_rules)?;
+    let label = dotns::strip_tld(name, &env.tld);
+    let pop_rules = parse_h160(&env.pop_rules)?;
     let origin = account_id(&build_signer(None, None)?);
     let data = revive_view(
         client,
@@ -156,17 +156,17 @@ pub async fn classify_name(
     registrar::decode_classify(&data)
 }
 
-/// The base list price (native plancks, no registration margin) of a `.dot`
+/// The base list price (native plancks, no registration margin) of a DotNS
 /// `name` for `owner`, via the PoP rules' `priceWithoutCheck`. `name` may carry
-/// the `.dot` suffix or not.
+/// the env's TLD suffix or not.
 pub async fn name_price_native(
     client: &OnlineClient<AssetHubConfig>,
     env: &Env,
     name: &str,
     owner: H160,
 ) -> Result<u128> {
-    let label = name.strip_suffix(".dot").unwrap_or(name);
-    let pop_rules = parse_h160(env.pop_rules)?;
+    let label = dotns::strip_tld(name, &env.tld);
+    let pop_rules = parse_h160(&env.pop_rules)?;
     let origin = account_id(&build_signer(None, None)?);
     let data = revive_view(
         client,
@@ -200,7 +200,7 @@ pub struct TransferOutcome {
     pub tx: [u8; 32],
 }
 
-/// Transfer the `.dot` `name` (an ERC721 on the DotNS Registrar) from the signer
+/// Transfer the DotNS `name` (an ERC721 on the DotNS Registrar) from the signer
 /// to `to_raw` (a `0x` H160 or an SS58 address). Prechecks NFT ownership so we
 /// fail before spending fees, quotes the friction fee (0 for same-tier/upward
 /// moves) and pays it as the payable `transferFrom` call value, then verifies
@@ -217,7 +217,7 @@ pub async fn transfer_name(
             env.id
         );
     }
-    let registrar_addr = parse_h160(env.registrar)?;
+    let registrar_addr = parse_h160(&env.registrar)?;
     let client = asset_hub_client(env).await?;
     ensure_mapped(&client, signer).await?;
 
@@ -323,7 +323,7 @@ pub async fn ensure_domain(
             hex::encode(owner.0)
         ),
         None if !allow_register => {
-            let label = name.strip_suffix(".dot").unwrap_or(name);
+            let label = dotns::strip_tld(name, &env.tld);
             bail!(
                 "{name} is not registered — run `dotkit asset-hub name register {label}` first, \
                  or pass --register to register it now (open-tier, costs PAS)"
@@ -431,7 +431,7 @@ async fn personhood_status(client: &OnlineClient<AssetHubConfig>, owner: H160) -
     registrar::decode_personhood_status(&data)
 }
 
-/// Register a `.dot` `name` for `signer` via the commit/reveal flow on the DotNS
+/// Register a DotNS `name` for `signer` via the commit/reveal flow on the DotNS
 /// RegistrarController. Handles open (tier 0) and personhood-gated Lite/Full (tier
 /// 1/2) names — for the latter it pre-checks the owner's personhood so we fail
 /// before committing; Reserved (tier 3) is rejected. Signs `commit`, waits for the
@@ -439,11 +439,11 @@ async fn personhood_status(client: &OnlineClient<AssetHubConfig>, owner: H160) -
 /// the Registry. Returns the owner H160 and the native value paid. `name` must be
 /// normalized already.
 pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H160, u128)> {
-    let label = name.strip_suffix(".dot").unwrap_or(name).to_string();
+    let label = dotns::strip_tld(name, &env.tld).to_string();
 
-    let registrar_addr = parse_h160(env.registrar_controller)?;
-    let pop_rules = parse_h160(env.pop_rules)?;
-    let registry = parse_h160(env.registry)?;
+    let registrar_addr = parse_h160(&env.registrar_controller)?;
+    let pop_rules = parse_h160(&env.pop_rules)?;
+    let registry = parse_h160(&env.registry)?;
 
     let client = asset_hub_client(env).await?;
     ensure_mapped(&client, signer).await?;

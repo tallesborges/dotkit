@@ -1,20 +1,20 @@
 //! Browse Publisher registry on Asset Hub (`pallet_revive`): list or retract a
-//! `.dot` label so it shows up in Browse without users having to search for its
+//! DotNS label so it shows up in Browse without users having to search for its
 //! name.
 //!
 //! `publish(string label)` / `unpublish(string label)` are non-payable writes to
 //! the env's Publisher contract (`paritytech/browse` `evm/src/Publisher.sol`).
-//! The contract keys by the **bare label** (no `.dot`, no subdomains) and checks
+//! The contract keys by the **bare label** (no TLD, no subdomains) and checks
 //! the caller owns the name NFT (`registrar.ownerOf`). Callers other than the
 //! contract owner are additionally personhood-gated (Lite tier ≥ 1) and
 //! rate-limited per day; [`explain_publisher_revert`] turns those two
-//! owner-hittable reverts into actionable messages. Only paseo-next-v2 has a
-//! deployed Publisher today (`env.publisher`).
+//! owner-hittable reverts into actionable messages. Each Publisher deployment is
+//! bound to one TLD, so it is selected per env (`env.publisher`).
 
 use crate::chain::config::asset_hub;
 use crate::chain::revive::{parse_h160, revive_call};
 use crate::chain::{account_id, asset_hub_client, revive_address};
-use crate::dotns::{name_owner, normalize_name};
+use crate::dotns::{name_owner, normalize_name, strip_tld};
 use crate::env::Env;
 use alloy_sol_types::{sol, SolCall, SolError};
 use anyhow::{bail, Context, Result};
@@ -36,12 +36,12 @@ pub struct PublishOutcome {
     pub tx: [u8; 32],
 }
 
-/// List a `.dot` `name` in the Browse Publisher registry.
+/// List a DotNS `name` in the Browse Publisher registry.
 pub async fn publish(env: &Env, signer: &Keypair, name: &str) -> Result<PublishOutcome> {
     submit(env, signer, name, true).await
 }
 
-/// Retract a `.dot` `name` from the Browse Publisher registry (no rebuild needed).
+/// Retract a DotNS `name` from the Browse Publisher registry (no rebuild needed).
 pub async fn unpublish(env: &Env, signer: &Keypair, name: &str) -> Result<PublishOutcome> {
     submit(env, signer, name, false).await
 }
@@ -50,13 +50,13 @@ async fn submit(env: &Env, signer: &Keypair, name: &str, publish: bool) -> Resul
     let verb = if publish { "publish" } else { "unpublish" };
     if env.publisher.is_empty() {
         bail!(
-            "--{verb} is not supported on env '{}' (no Publisher contract deployed; paseo-next-v2 only)",
-            env.id
+            "--{verb} is not supported on env '{}' (no Publisher contract deployed for this env)",
+            &env.id
         );
     }
-    let full = normalize_name(name);
-    let label = publisher_label(&full)?;
-    let publisher = parse_h160(env.publisher)?;
+    let full = normalize_name(name, &env.tld);
+    let label = publisher_label(&full, &env.tld)?;
+    let publisher = parse_h160(&env.publisher)?;
     let client = asset_hub_client(env).await?;
 
     // Pre-check ownership for a clear message instead of the contract's bare
@@ -154,16 +154,16 @@ fn rate_limit_message(next_available_at: u64) -> String {
     }
 }
 
-/// The bare, publishable label for a normalized `.dot` `name`: `.dot`-stripped,
-/// with empty labels and subdomains rejected (the Publisher only keys base
-/// `<label>.dot` nodes).
-fn publisher_label(normalized: &str) -> Result<String> {
-    let label = normalized.strip_suffix(".dot").unwrap_or(normalized);
+/// The bare, publishable label for a normalized `name`: TLD-stripped, with empty
+/// labels and subdomains rejected (the Publisher only keys base `<label>.<tld>`
+/// nodes).
+fn publisher_label(normalized: &str, tld: &str) -> Result<String> {
+    let label = strip_tld(normalized, tld);
     if label.is_empty() {
         bail!("empty label: nothing to publish");
     }
     if label.contains('.') {
-        bail!("subdomains are not supported by the Publisher registry (publish the base <label>.dot only)");
+        bail!("subdomains are not supported by the Publisher registry (publish the base <label>.{tld} only)");
     }
     Ok(label.to_string())
 }
@@ -174,10 +174,14 @@ mod tests {
 
     #[test]
     fn publisher_label_strips_and_validates() {
-        assert_eq!(publisher_label("dotshare.dot").unwrap(), "dotshare");
-        assert_eq!(publisher_label("dotshare").unwrap(), "dotshare");
-        assert!(publisher_label("app.dotshare.dot").is_err());
-        assert!(publisher_label(".dot").is_err());
+        assert_eq!(
+            publisher_label("dotshare.paseo", "paseo").unwrap(),
+            "dotshare"
+        );
+        assert_eq!(publisher_label("dotshare", "paseo").unwrap(), "dotshare");
+        assert!(publisher_label("app.dotshare.paseo", "paseo").is_err());
+        assert!(publisher_label(".paseo", "paseo").is_err());
+        assert_eq!(publisher_label("dotshare.dot", "dot").unwrap(), "dotshare");
     }
 
     #[test]

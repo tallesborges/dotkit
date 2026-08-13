@@ -1,0 +1,51 @@
+# dotkit built-in environment table.
+#
+# Compiled into the binary (`include_str!` in `src/env.rs`), so dotkit needs no
+# config file to run. Layer your own entries on top in `~/.dotkit/envs.toml`:
+# entries are merged by id, so an existing id patches only the fields you list
+# and a new id adds an environment. See `dotkit account env --list`.
+#
+# Every `--env` is a matched set: the RPCs, the DotNS TLD and the Asset Hub
+# contract addresses belong together. Addresses verified 2026-08-12 against
+# `paritytech/dotns-releases` (`paseov2/2026-08-12/DEPLOYMENT.md`),
+# `paritytech/bulletin-deploy` (`assets/environments.json`) and
+# `paritytech/browse` (`evm/deployments.json`), then confirmed to carry code via
+# `ReviveApi.code` on each live chain.
+#
+# DotNS deploys through CREATE3, so the contract set is identical across chains
+# that share a deployer and salt — paseo-next-v2 and preview differ only by TLD
+# and by their Browse Publisher.
+#
+# Only environments dotkit can define centrally and has verified live ship here.
+# Anything machine-local, or whose endpoints aren't published upstream, belongs in
+# the overlay rather than in the binary.
+
+[paseo-next-v2]
+name = "Paseo Next v2"
+bulletin_rpc = "wss://paseo-bulletin-next-rpc.polkadot.io"
+asset_hub_rpc = "wss://paseo-asset-hub-next-rpc.polkadot.io"
+ipfs_gateway = "https://paseo-bulletin-next-ipfs.polkadot.io"
+tld = "paseo"
+web_gateway = "paseo.li"
+dotns_content_resolver = "0x7F74D7CD50f5a834270E2ad395a01b01891AB37d"
+registrar_controller = "0xBdaA01bD1bA67d709F2b1fF286Da0d854977EA30"
+registrar = "0x4f06E818Ba3d987704fd91cf3d868E4b019106Ab"
+registry = "0xf34054fd76BbF85f216cf9908226D5f0A72E50CA"
+pop_rules = "0x747B456bE03aec0b42bd85C51513730FBD45DA31"
+publisher = "0x1875B90A61705917945f9B7C6Ff7819Ad48A198e"
+
+# PreviewNet keeps the `.dot` TLD until its next wipe, after which it becomes
+# `.test`. Same CREATE3 contract set as Paseo v2; its own Browse Publisher.
+[preview]
+name = "PreviewNet"
+bulletin_rpc = "wss://previewnet.substrate.dev/bulletin"
+asset_hub_rpc = "wss://previewnet.substrate.dev/asset-hub"
+ipfs_gateway = "https://previewnet.substrate.dev/ipfs"
+tld = "dot"
+web_gateway = "testnet.li"
+dotns_content_resolver = "0x7F74D7CD50f5a834270E2ad395a01b01891AB37d"
+registrar_controller = "0xBdaA01bD1bA67d709F2b1fF286Da0d854977EA30"
+registrar = "0x4f06E818Ba3d987704fd91cf3d868E4b019106Ab"
+registry = "0xf34054fd76BbF85f216cf9908226D5f0A72E50CA"
+pop_rules = "0x747B456bE03aec0b42bd85C51513730FBD45DA31"
+publisher = "0x5a3c111278ec98f327466c9ab7a5e0e0f5047acc"

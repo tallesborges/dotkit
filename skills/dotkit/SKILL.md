@@ -1,6 +1,6 @@
 ---
 name: dotkit
-description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — deploying a static build dir to a .dot domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier .dot name, looking up who owns a name or whether it's available, transferring a name you own, resolving or setting a name's contenthash/text records, publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: deploy my app to a .dot with dotkit, dotkit deploy ./dist myapp.dot, register a .dot name, who owns this .dot, transfer a .dot to someone, bind a CID to a .dot, publish my app to Browse, dotkit deploy --publish, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
+description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — sharing a file through Dotshare, deploying a static build dir to a DotNS domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier DotNS name, looking up who owns a name or whether it's available, transferring a name you own, resolving or setting a name's contenthash/text records, publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: share a file with dotkit, get a dotshare link from the terminal, dotkit share file.pdf, deploy my app to a .paseo or .dot name with dotkit, dotkit deploy ./dist myapp.paseo, register a .paseo name, who owns this name, transfer a name to someone, bind a CID to a name, publish my app to Browse, what TLD does this env use, dotkit deploy --publish, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
 ---
 
 # dotkit
@@ -8,13 +8,16 @@ description: "Use when working with the dotkit CLI (a fast single-binary Rust to
 Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin** storage + **DotNS** naming (Asset Hub / `pallet_revive`). No Node/Bun, no `ipfs` daemon (native in-process UnixFS merkleization, byte-exact with Kubo 0.40.1). First-class command is `dotkit deploy`.
 
 - **Binary:** `dotkit` on PATH, or build from source: `cargo build --release` → `./target/release/dotkit`.
-- **Default env:** `paseo-next-v2` (resolves at `https://<name>.paseo.li`).
+- **Default env:** `paseo-next-v2` — TLD **`.paseo`**, resolves at `https://<name>.paseo.li`.
+- **TLD is per-env.** DotNS was redeployed on Paseo v2 on 2026-08-11 and Paseo names now end in **`.paseo`**, not `.dot`. `preview` (PreviewNet) is still `.dot` until its next wipe. dotkit appends the selected env's TLD when you omit it, so prefer bare labels (`myapp`) in scripts and let `--env` decide.
+- **Envs are config, not code.** Built-in defaults ship in the binary; `~/.dotkit/envs.toml` overlays them **by id** (existing id = patch those fields, new id = add an env). See the Environments section — adding a chain or fixing a post-wipe address needs no rebuild.
 
 ## Command surface
 
 | Command | What it does |
 |---|---|
-| `deploy <dir> <domain.dot>` | Merkleize → Bulletin upload → bind `.dot` contenthash. With a `[product]` `deploy.toml` it also uploads the icon + writes the root `manifest` record. Add `--register` to auto-register an open-tier name; `--publish` to also list it in Browse. |
+| `share <file> [--name <name>] [--mime <type>]` | Wrap one file in Dotshare's v2 envelope, store it on Bulletin, and print browser + host viewer links. Unencrypted; ≤2 MiB including the small envelope. |
+| `deploy <dir> <domain>` | Merkleize → Bulletin upload → bind the DotNS contenthash. With a `[product]` `deploy.toml` it also uploads the icon + writes the root `manifest` record. Add `--register` to auto-register an open-tier name; `--publish` to also list it in Browse. |
 | `bulletin store <file>` | Store one blob (≤2 MiB) on Bulletin. |
 | `bulletin store-car <file.car>` | Store every block of a CARv1 so its root resolves. |
 | `bulletin status [--address <ss58>]` | Bulletin authorization / quota for an account. |
@@ -22,23 +25,57 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | `bulletin authorize [--address <ss58>] [--transactions N] [--bytes N]` | Grant an account Bulletin storage quota. Signer needs **Authorizer** privileges (pass `--mnemonic`); not the pool. |
 | `asset-hub transfer <dest> <plancks>` | Send native PAS. |
 | `asset-hub map` | Ensure the signer has an H160 mapping (`Revive.map_account`). |
-| `asset-hub name resolve <name.dot>` | Name → contenthash CID. |
-| `asset-hub name owner-of <name.dot>` (alias `oo`) | Whether a name is registered and who owns it (H160). |
-| `asset-hub name lookup <name.dot>` | Read-only overview: owner, required tier + status, base price, contenthash. |
-| `asset-hub name register <name.dot>` | Register a name (commit/reveal) to the signer — open, or Lite/Full with a personhood-verified signer. |
-| `asset-hub name transfer <name.dot> <to>` | Transfer a name you own to `<to>` (0x H160 or SS58); pays the quoted friction fee. |
-| `asset-hub name publish <name.dot>` | List a name you own in Browse via the Publisher registry (paseo-next-v2). |
-| `asset-hub name unpublish <name.dot>` | Remove a name you own from Browse (no rebuild needed). |
-| `asset-hub name content set <name.dot> <cid>` | Bind a CID to a name's contenthash. |
-| `asset-hub name content <name.dot>` | Read the raw contenthash record. |
-| `asset-hub name text set <name.dot> <key> <value>` | Set a text record (e.g. `manifest`, `executable`). |
-| `asset-hub name text get <name.dot> <key>` | Read a text record. |
+| `asset-hub name resolve <name>` | Name → contenthash CID. |
+| `asset-hub name owner-of <name>` (alias `oo`) | Whether a name is registered and who owns it (H160). |
+| `asset-hub name lookup <name>` | Read-only overview: owner, required tier + status, base price, contenthash. |
+| `asset-hub name register <name>` | Register a name (commit/reveal) to the signer — open, or Lite/Full with a personhood-verified signer. |
+| `asset-hub name transfer <name> <to>` | Transfer a name you own to `<to>` (0x H160 or SS58); pays the quoted friction fee. |
+| `asset-hub name publish <name>` | List a name you own in Browse via the Publisher registry. |
+| `asset-hub name unpublish <name>` | Remove a name you own from Browse (no rebuild needed). |
+| `asset-hub name content set <name> <cid>` | Bind a CID to a name's contenthash. |
+| `asset-hub name content <name>` | Read the raw contenthash record. |
+| `asset-hub name text set <name> <key> <value>` | Set a text record (e.g. `manifest`, `executable`). |
+| `asset-hub name text get <name> <key>` | Read a text record. |
 | `account env` / `account whoami` | Print resolved env / prove signer + chain connectivity (shows SS58 + H160). |
 | `account info` | Show the signer's Asset Hub native (PAS) balance. |
 | `bulletin pool init [--accounts N] [--force] [--skip-authorize]` / `status` / `authorize [--transactions N] [--bytes N]` | Manage a **private per-machine** Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`; derived `//deploy/N`). `init` generates the keystore **and authorizes** its accounts on-chain via `//Alice` (`utility.batch_all`) in one step — pass `--skip-authorize` for offline-only generation. `status` shows each account's **on-chain** auth + quota with an `N/M authorized` rollup (honors `--pool`, so `--pool shared` inspects the shared pool; an authorization whose expiry block has passed is flagged `✗ EXPIRED` and does **not** count as authorized). `authorize` (re)batch-authorizes accounts via `//Alice`: idempotent on still-valid auths, and it **re-authorizes expired ones** (a lingering-but-expired record still exists on-chain but no longer grants free storage, so stores fail "balance too low" until refreshed). `deploy`/`store` use the pool by default (override with `--pool local\|shared`). Testnet-only. |
 
 **Global flags:** `--env <id>` (default `paseo-next-v2`), `--mnemonic`, `--derivation-path //x`, `--pool <local|shared>` (Bulletin upload pool; default: private `~/.dotkit` pool if a keystore exists, else shared), `-q/--quiet`, `--json` (one machine-readable JSON object per command; errors become `{"error": …}` on stderr).
 **`deploy` flags:** `--register`, `--publish`, `--fail-on-publish-error`, `--config <deploy.toml>`, `--input-car <file>`, `--kubo`.
+
+## Environments
+
+| `--env` | TLD | Notes |
+|---|---|---|
+| `paseo-next-v2` *(default)* | `.paseo` | Full support, `<name>.paseo.li`. Verified live. |
+| `preview` | `.dot` | PreviewNet; becomes `.test` at its next wipe. Same CREATE3 contracts as Paseo v2. Verified live. |
+
+Those are the only two that ship in the binary — an env is built in only if it can be
+defined centrally *and* has been verified against a live chain. Any other network (a
+local devnet, or one whose RPCs aren't published upstream) is defined per machine in the
+overlay, so treat `dotkit account env --list` as the authoritative list rather than this
+table.
+
+Two layers, merged by id:
+
+1. **Built-in** — `assets/envs.toml`, compiled in, so dotkit runs with no config file.
+2. **Overlay** — `~/.dotkit/envs.toml`, if present. An existing id patches only the fields it lists; a new id adds an env.
+
+```toml
+# ~/.dotkit/envs.toml
+
+[paseo-next-v2]                  # patch one address after a chain wipe
+publisher = "0x1875B90A61705917945f9B7C6Ff7819Ad48A198e"
+
+[mynet]                          # or add a whole env
+tld = "test"
+asset_hub_rpc = "ws://127.0.0.1:9944"
+bulletin_rpc  = "ws://127.0.0.1:9945"
+```
+
+- `dotkit account env` shows the resolved env plus its `source` (`builtin` / `builtin+user` / `user`); `dotkit account env --list` shows all of them.
+- Only **`tld`** is required for a new env — it feeds the namehash and cannot be guessed. Everything else may be omitted; the command that needs a missing endpoint or address says so by name.
+- Unknown keys are **rejected**, so a typo like `reslover` fails loudly instead of being silently ignored.
 
 ## Signer & account model
 
@@ -65,10 +102,10 @@ The registrar's `classifyName` (on `POP_RULES`) gates a label by shape + base le
 
 ```sh
 # Deploy to a name you own (redeploy just updates the contenthash)
-dotkit deploy ./dist myapp.dot
+dotkit deploy ./dist myapp.paseo
 
 # First-time: register the name in the same run (open, or Lite/Full if the signer is verified)
-dotkit deploy ./dist myapp.dot --register
+dotkit deploy ./dist myapp.paseo --register
 ```
 
 `deploy` reads the Registry owner first: proceeds if you own it, errors if someone else does, and (with `--register`) registers an unregistered name (open, or Lite/Full if the signer has the personhood) before uploading. Then it merkleizes, uploads blocks to Bulletin (pool signer), binds the contenthash (owner signer), and prints the CID + `https://<name>.paseo.li`.
@@ -88,7 +125,7 @@ icon = "icon.png"          # path relative to deploy.toml; PNG or JPEG
 
 Each `[text]` entry is written via `setText` after the bind. The build dir is never scanned for the config (its files get uploaded).
 
-**`[product]` (generated root manifest).** When `[product]` is present, `deploy` uploads the `icon` to Bulletin (single blob, ≤2 MiB, **blake2b-256** multihash — the host's Browse/preimage icon resolver requires it; a sha2-256 icon CID resolves on the IPFS gateway but Browse renders the fallback identicon), builds the RFC root manifest `{"$v":1,"displayName","description","icon":{"cid","format"}}`, and writes it as the base name's `manifest` text record — so Browse shows a name + icon, not just a resolvable contenthash. The app's contenthash stays the SPA entry point; no `app.<name>.dot` subname or `executable` records are created (that's for multi-surface widget/worker products). `icon.format` is inferred from the extension (`.png`→`png`, `.jpg`/`.jpeg`→`jpeg`); other extensions are rejected. `[product]` **generates** the `manifest` record, so a config that also sets a manual `[text].manifest` is rejected as a conflicting source of truth. Writing the manifest is automatic on deploy; Browse discovery still needs explicit `--publish` (personhood-gated + rate-limited).
+**`[product]` (generated root manifest).** When `[product]` is present, `deploy` uploads the `icon` to Bulletin (single blob, ≤2 MiB, **blake2b-256** multihash — the host's Browse/preimage icon resolver requires it; a sha2-256 icon CID resolves on the IPFS gateway but Browse renders the fallback identicon), builds the RFC root manifest `{"$v":1,"displayName","description","icon":{"cid","format"}}`, and writes it as the base name's `manifest` text record — so Browse shows a name + icon, not just a resolvable contenthash. The app's contenthash stays the SPA entry point; no `app.<name>` subname or `executable` records are created (that's for multi-surface widget/worker products). `icon.format` is inferred from the extension (`.png`→`png`, `.jpg`/`.jpeg`→`jpeg`); other extensions are rejected. `[product]` **generates** the `manifest` record, so a config that also sets a manual `[text].manifest` is rejected as a conflicting source of truth. Writing the manifest is automatic on deploy; Browse discovery still needs explicit `--publish` (personhood-gated + rate-limited).
 
 ## Browse listing (Publisher)
 
@@ -96,15 +133,15 @@ Each `[text]` entry is written via `setText` after the bind. The build dir is ne
 
 ```sh
 # Deploy and list in Browse in one run
-dotkit deploy ./dist myapp.dot --publish
+dotkit deploy ./dist myapp.paseo --publish
 
 # Or list/retract an already-deployed name
-dotkit asset-hub name publish myapp.dot
-dotkit asset-hub name unpublish myapp.dot
+dotkit asset-hub name publish myapp.paseo
+dotkit asset-hub name unpublish myapp.paseo
 ```
 
-- **paseo-next-v2 only** — the only env with a deployed Publisher (`env.publisher`); dotkit refuses `--publish`/`publish` elsewhere.
-- **Owner-only, base labels only.** The signer must own the name NFT; dotkit pre-checks ownership and rejects subdomains (`app.`/`widget.`/`worker.`) — only base `<label>.dot` can be listed.
+- **Per-env Publisher.** Each deployment is bound to one TLD, so the address is selected by `--env` (`env.publisher`); dotkit refuses `--publish`/`publish` on an env with none configured.
+- **Owner-only, base labels only.** The signer must own the name NFT; dotkit pre-checks ownership and rejects subdomains (`app.`/`widget.`/`worker.`) — only the base `<label>` can be listed.
 - **Personhood-gated + rate-limited.** Non-owner-of-contract callers need Lite/Full personhood (`NoPersonhood` revert otherwise) and a per-day publish cap (Lite 1/day, Full 5/day). A freshly registered open-tier name whose owner has no personhood can't publish yet.
 - In `deploy`, a publish failure is **non-fatal by default** (warns, exit 0); add `--fail-on-publish-error` to hard-fail after a successful deploy.
 
@@ -130,10 +167,11 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 - **Name digits:** none or exactly two, else the register reverts.
 - **`<name>.paseo.li`** is the v2 gateway; `<name>.dot.li` points at the dead Summit chain — never use it for v2.
 - **Secrets** via `$MNEMONIC` / `$DOTNS_MNEMONIC`, not `--mnemonic` in shell history.
-- **`preview` env** has placeholder addresses — `name register`, `name transfer`, and `lookup` price/tier are not wired there (registrar/registry/NFT addresses only exist for `paseo-next-v2`).
+- **`preview` env** shares Paseo v2's CREATE3 contract set but keeps the **`.dot`** TLD until PreviewNet's next wipe. Never pass a `.paseo` name to `--env preview` (or vice versa) — the TLD is part of the namehash, so it silently targets a different node. Pass bare labels and this can't happen.
+- **`InvalidTransaction::Stale` ("Transaction is outdated") is a nonce race**, not a config problem. The default signer is the shared public dev phrase, used concurrently by others and CI. Retry.
 - **Name transfer** pays the registrar's quoted friction fee (0 for same-tier/upward moves, a fee for downward moves); only the current NFT owner can transfer, and the recipient `<to>` is a `0x` H160 or SS58 address.
-- **Publisher (`--publish` / `name publish|unpublish`)** is paseo-next-v2 only, owner-only, base-label-only, and personhood-gated + rate-limited. In `deploy` it's non-fatal by default (`--fail-on-publish-error` to hard-fail).
+- **Publisher (`--publish` / `name publish|unpublish`)** is per-env, owner-only, base-label-only, and personhood-gated + rate-limited. In `deploy` it's non-fatal by default (`--fail-on-publish-error` to hard-fail).
 - **`bulletin authorize`** needs a signer that holds Bulletin **Authorizer** privileges (pass `--mnemonic`); the default storage pool cannot authorize and the chain returns `BadOrigin`.
 - **`--json`** makes every command print one JSON object to stdout (read commands like `name owner-of`/`lookup`, `bulletin verify`, `account info` are read-only and script-friendly); on failure it prints `{"error": …}` to stderr.
 - **Single blob > 2 MiB** is not yet supported (`bulletin store` bails; Kubo/native chunking keeps deploy blocks ≤256 KiB).
-- **`--env` carries a matched set** — the Bulletin RPC and Asset Hub contract addresses go together; select an env, don't mix addresses across envs.
+- **`--env` carries a matched set** — the Bulletin RPC, the DotNS **TLD** and the Asset Hub contract addresses go together; select an env, don't mix them. After a chain wipe, re-verify against `paritytech/dotns-releases` before trusting a deploy.
