@@ -54,6 +54,9 @@ pub enum Cmd {
     /// Read or set a DotNS name's text records (e.g. manifest, executable).
     #[command(subcommand)]
     Text(TextCmd),
+    /// Create a subnode (subdomain) under a name you own.
+    #[command(subcommand)]
+    Subnode(SubnodeCmd),
 }
 
 #[derive(Subcommand)]
@@ -87,6 +90,17 @@ pub enum TextCmd {
         key: String,
         /// Record value.
         value: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SubnodeCmd {
+    /// Create/reassign a subnode under a parent name you own (signed Revive.call).
+    Create {
+        /// The full child name, e.g. app.myapp.paseo (TLD appended when omitted).
+        name: String,
+        /// Owner of the new subnode: a 0x H160 or SS58 address. Defaults to the signer.
+        to: Option<String>,
     },
 }
 
@@ -165,6 +179,9 @@ pub async fn run(
         }
         Cmd::Text(TextCmd::Set { name, key, value }) => {
             text_set(env, &name, &key, &value, mnemonic, derivation_path).await?;
+        }
+        Cmd::Subnode(SubnodeCmd::Create { name, to }) => {
+            subnode_create(env, &name, to.as_deref(), mnemonic, derivation_path).await?;
         }
     }
     Ok(())
@@ -396,6 +413,42 @@ async fn text_set(
     } else {
         ui::success(format!("set '{key}' on {name}"));
         ui::kv(key, value);
+    }
+    Ok(())
+}
+
+async fn subnode_create(
+    env: &Env,
+    child: &str,
+    to: Option<&str>,
+    mnemonic: Option<String>,
+    derivation_path: Option<String>,
+) -> Result<()> {
+    let child = dotns::normalize_name(child, &env.tld);
+    let (sub_label, parent) = child
+        .split_once('.')
+        .context("expected a child name like app.myapp — got a bare label")?;
+    if parent == env.tld {
+        bail!(
+            "{child} has no parent name — give a child of a registered name, e.g. app.myapp.{}",
+            env.tld
+        );
+    }
+
+    let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
+    let outcome = dotns::create_subnode(env, &signer, parent, sub_label, to).await?;
+
+    if ui::json() {
+        ui::emit(&json!({
+            "name": outcome.subnode_name,
+            "node": format!("0x{}", hex::encode(outcome.subnode)),
+            "owner": format!("0x{}", hex::encode(outcome.owner.0)),
+            "tx": format!("0x{}", hex::encode(outcome.tx)),
+        }));
+    } else {
+        ui::success(format!("created {}", outcome.subnode_name));
+        ui::kv("owner", format!("0x{}", hex::encode(outcome.owner.0)));
+        ui::kv("node", format!("0x{}", hex::encode(outcome.subnode)));
     }
     Ok(())
 }

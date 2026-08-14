@@ -1,6 +1,6 @@
 ---
 name: dotkit
-description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — sharing a file through Dotshare, deploying a static build dir to a DotNS domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier DotNS name, looking up who owns a name or whether it's available, transferring a name you own, resolving or setting a name's contenthash/text records, publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: share a file with dotkit, get a dotshare link from the terminal, dotkit share file.pdf, deploy my app to a .paseo or .dot name with dotkit, dotkit deploy ./dist myapp.paseo, register a .paseo name, who owns this name, transfer a name to someone, bind a CID to a name, publish my app to Browse, what TLD does this env use, dotkit deploy --publish, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
+description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — sharing a file through Dotshare, deploying a static build dir to a DotNS domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier DotNS name, looking up who owns a name or whether it's available, transferring a name you own, creating a subnode/subdomain under a name you own, resolving or setting a name's contenthash/text records, publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: share a file with dotkit, get a dotshare link from the terminal, dotkit share file.pdf, deploy my app to a .paseo or .dot name with dotkit, dotkit deploy ./dist myapp.paseo, register a .paseo name, who owns this name, transfer a name to someone, create a subdomain with dotkit, dotkit subnode create app.myapp.paseo, bind a CID to a name, publish my app to Browse, what TLD does this env use, dotkit deploy --publish, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
 ---
 
 # dotkit
@@ -30,6 +30,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | `asset-hub name lookup <name>` | Read-only overview: owner, required tier + status, base price, contenthash. |
 | `asset-hub name register <name>` | Register a name (commit/reveal) to the signer — open, or Lite/Full with a personhood-verified signer. |
 | `asset-hub name transfer <name> <to>` | Transfer a name you own to `<to>` (0x H160 or SS58); pays the quoted friction fee. |
+| `asset-hub name subnode create <child> [to]` | Create/reassign a subnode (subdomain) under a parent name you own, e.g. `app.myapp.paseo`; owner defaults to the signer. |
 | `asset-hub name publish <name>` | List a name you own in Browse via the Publisher registry. |
 | `asset-hub name unpublish <name>` | Remove a name you own from Browse (no rebuild needed). |
 | `asset-hub name content set <name> <cid>` | Bind a CID to a name's contenthash. |
@@ -144,6 +145,22 @@ dotkit asset-hub name unpublish myapp.paseo
 - **Owner-only, base labels only.** The signer must own the name NFT; dotkit pre-checks ownership and rejects subdomains (`app.`/`widget.`/`worker.`) — only the base `<label>` can be listed.
 - **Personhood-gated + rate-limited.** Non-owner-of-contract callers need Lite/Full personhood (`NoPersonhood` revert otherwise) and a per-day publish cap (Lite 1/day, Full 5/day). A freshly registered open-tier name whose owner has no personhood can't publish yet.
 - In `deploy`, a publish failure is **non-fatal by default** (warns, exit 0); add `--fail-on-publish-error` to hard-fail after a successful deploy.
+
+## Subnodes (subdomains)
+
+`asset-hub name subnode create <child> [to]` creates (or reassigns) a subnode via the DotNS **Registry** `setSubnodeOwner` — a different contract path from base registration (which goes through the RegistrarController commit/reveal). Give the full child name; the env TLD is appended when omitted:
+
+```sh
+# Create app.myapp.paseo, owned by the signer (must own myapp.paseo)
+dotkit asset-hub name subnode create app.myapp.paseo
+
+# Assign the new subnode to someone else (0x H160 or SS58)
+dotkit asset-hub name subnode create app.myapp.paseo 0xabc… # or an SS58 address
+```
+
+- **Owner-only, parent-sovereign.** Only the **parent** name's owner can create subnodes under it (dotkit pre-checks ownership); the call **overwrites** any existing owner of that subnode. No commit/reveal, no PoP tier, no fee beyond gas.
+- **No pricing/NFT.** A subnode is not an ERC721 name (no `register`/`transfer`/`publish` NFT semantics) — it's a directly-owned Registry node. Bind its records with the normal `name content set` / `name text set` afterward.
+- **Base names only** still applies to registration and Browse: `register` mints top-level `<label>.<tld>` names, and the **Publisher** rejects subnodes — you can bind/resolve a subnode's records but you can't `publish` it to Browse.
 
 ## Diagnosing reverts
 

@@ -29,6 +29,13 @@ sol! {
         bool reserved;
     }
 
+    struct SubnodeRecord {
+        bytes32 parentNode;
+        string subLabel;
+        string parentLabel;
+        address owner;
+    }
+
     struct Price {
         uint256 base;
         uint8 tier;
@@ -45,6 +52,8 @@ sol! {
     function register(Registration r) external payable;
 
     function owner(bytes32 node) external view returns (address);
+
+    function setSubnodeOwner(SubnodeRecord record) external returns (bytes32 subnode);
 
     function ownerOf(uint256 tokenId) external view returns (address);
     function quoteTransferFee(uint256 tokenId, address to) external view returns (uint256);
@@ -152,6 +161,30 @@ pub fn encode_owner(node: [u8; 32]) -> Vec<u8> {
 pub fn decode_owner(data: &[u8]) -> Result<H160> {
     let ret = ownerCall::abi_decode_returns(data).context("decoding Registry.owner")?;
     Ok(to_h160(ret))
+}
+
+/// Build the `SubnodeRecord` tuple for `setSubnodeOwner`. `parent_node` is the
+/// namehash of the full parent name (with TLD); `parent_label` is that name with
+/// the TLD stripped (e.g. `myapp` or `child.myapp`), and its namehash must match
+/// `parent_node` or the contract reverts `ParentLabelMismatch`. `sub_label` is a
+/// single canonical label (no dots).
+pub fn subnode_record(
+    parent_node: [u8; 32],
+    sub_label: &str,
+    parent_label: &str,
+    owner: H160,
+) -> SubnodeRecord {
+    SubnodeRecord {
+        parentNode: FixedBytes::from(parent_node),
+        subLabel: sub_label.to_string(),
+        parentLabel: parent_label.to_string(),
+        owner: to_address(owner),
+    }
+}
+
+/// ABI-encode `setSubnodeOwner(SubnodeRecord)` on the DotNS Registry.
+pub fn encode_set_subnode_owner(record: SubnodeRecord) -> Vec<u8> {
+    setSubnodeOwnerCall { record }.abi_encode()
 }
 
 /// The ERC721 tokenId of a name is `uint256(namehash(name))` — the same node
@@ -283,6 +316,7 @@ mod tests {
         assert_eq!(hex::encode(minCommitmentAgeCall::SELECTOR), "8d839ffe");
         assert_eq!(hex::encode(registerCall::SELECTOR), "b26675d5");
         assert_eq!(hex::encode(ownerCall::SELECTOR), "02571be3");
+        assert_eq!(hex::encode(setSubnodeOwnerCall::SELECTOR), "bef42f3c");
         assert_eq!(hex::encode(personhoodStatusCall::SELECTOR), "886af133");
         // Standard ERC721 selectors on the name-NFT Registrar.
         assert_eq!(hex::encode(ownerOfCall::SELECTOR), "6352211e");

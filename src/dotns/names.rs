@@ -294,8 +294,93 @@ pub async fn transfer_name(
     })
 }
 
-/// Ensure `signer` owns `name` before a deploy binds to it: proceed if already
-/// theirs; register open-tier when `allow_register` and it's unregistered; error
+/// Outcome of a subnode creation.
+pub struct SubnodeOutcome {
+    pub subnode_name: String,
+    pub subnode: [u8; 32],
+    pub owner: H160,
+    pub tx: [u8; 32],
+}
+
+/// Create (or reassign) the subnode `sub_label`.`parent` on the DotNS Registry
+/// and assign it to `owner_arg` (a `0x` H160 or SS58 address, defaulting to the
+/// signer). `parent` must be a normalized full parent name (with the env TLD).
+/// Pre-checks that the signer owns the parent so we fail before fees, submits the
+/// `setSubnodeOwner` write, then verifies the new subnode's owner. The parent is
+/// sovereign: this overwrites any existing subnode owner.
+pub async fn create_subnode(
+    env: &Env,
+    signer: &Keypair,
+    parent: &str,
+    sub_label: &str,
+    owner_arg: Option<&str>,
+) -> Result<SubnodeOutcome> {
+    if env.registry.is_empty() {
+        bail!(
+            "subnode creation is not supported on env '{}' (no registry address configured)",
+            env.id
+        );
+    }
+    if sub_label.is_empty() || sub_label.contains('.') {
+        bail!("sub-label '{sub_label}' must be a single label (no dots)");
+    }
+
+    let registry = parse_h160(&env.registry)?;
+    let client = asset_hub_client(env).await?;
+    ensure_mapped(&client, signer).await?;
+
+    let origin = account_id(signer);
+    let us = revive_address(&client, origin).await?;
+    let owner = match owner_arg {
+        Some(to) => resolve_recipient(&client, to).await?,
+        None => us,
+    };
+
+    // Only the parent's owner can create subnodes under it; pre-check for a clear
+    // message instead of the contract's bare NotAuthorised revert.
+    match name_owner(&client, env, parent).await? {
+        Some(o) if o.0 == us.0 => {}
+        Some(o) => bail!(
+            "{parent} is owned by 0x{} (not you); only the parent owner can create subnodes under it",
+            hex::encode(o.0)
+        ),
+        None => bail!("{parent} is not registered; register/own it before creating subnodes under it"),
+    }
+
+    let parent_node = dotns::namehash(parent);
+    let parent_label = dotns::strip_tld(parent, &env.tld);
+    let subnode_name = format!("{sub_label}.{parent}");
+
+    ui::step(format!(
+        "create {subnode_name} → 0x{}",
+        hex::encode(owner.0)
+    ));
+    let calldata =
+        registrar::encode_set_subnode_owner(registrar::subnode_record(parent_node, sub_label, parent_label, owner));
+    let tx = revive_call(&client, signer, registry, 0, calldata).await?;
+    ui::kv("tx", format!("0x{}", hex::encode(tx)));
+
+    let subnode = dotns::namehash(&subnode_name);
+    let owner_data =
+        revive_view(&client, origin, registry, 0, registrar::encode_owner(subnode)).await?;
+    let onchain = registrar::decode_owner(&owner_data)?;
+    if onchain.0 != owner.0 {
+        bail!(
+            "subnode created but Registry owner is 0x{} (expected 0x{})",
+            hex::encode(onchain.0),
+            hex::encode(owner.0)
+        );
+    }
+
+    Ok(SubnodeOutcome {
+        subnode_name,
+        subnode,
+        owner,
+        tx,
+    })
+}
+
+/// Ensure `signer` owns `name` before a deploy binds to it: proceed if already/// theirs; register open-tier when `allow_register` and it's unregistered; error
 /// if it's taken. No-op when the env has no registry (the bind dry-run enforces
 /// ownership instead).
 pub async fn ensure_domain(
