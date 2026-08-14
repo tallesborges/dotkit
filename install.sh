@@ -6,7 +6,7 @@
 # Quick install:
 #   curl -fsSL https://raw.githubusercontent.com/tallesborges/dotkit/master/install.sh | bash
 #
-# Options (when run locally, e.g. ./install.sh --version v0.1.0):
+# Options (when run locally, e.g. ./install.sh --version v0.2.0):
 #   --version <tag>     install a specific release tag (default: latest)
 #   --bin-dir <dir>     install into <dir> (default: ~/.local/bin)
 #   --from-source       build from a local checkout with cargo instead of downloading
