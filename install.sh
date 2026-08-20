@@ -52,7 +52,7 @@ if [ "$FROM_SOURCE" = "1" ]; then
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
     [ -f "$repo_dir/Cargo.toml" ] || { echo "dotkit install: --from-source must run from a dotkit checkout" >&2; exit 1; }
     command -v cargo >/dev/null 2>&1 || { echo "dotkit install: 'cargo' not found. Install Rust from https://rustup.rs" >&2; exit 1; }
-    echo "==> Building dotkit (release) from $repo_dir…"
+    echo "==> Building dotkit (release) from ${repo_dir}…"
     cargo build --release --manifest-path "$repo_dir/Cargo.toml"
     bin_path="$repo_dir/target/release/$BIN_NAME"
 else
@@ -90,7 +90,7 @@ else
     base="https://github.com/$REPO/releases/download/$VERSION"
     tmp="$(mktemp -d)"
 
-    echo "==> Downloading $asset…"
+    echo "==> Downloading ${asset}…"
     curl -fsSL "$base/$asset" -o "$tmp/$asset" \
         || { rm -rf "$tmp"; echo "dotkit install: download failed: $base/$asset" >&2; exit 1; }
 
