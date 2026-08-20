@@ -1,6 +1,6 @@
 [package]
 name = "dotkit"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "A fast Rust CLI toolkit for the Polkadot ecosystem (Bulletin · DotNS)"
 
