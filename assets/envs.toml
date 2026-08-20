@@ -16,6 +16,10 @@
 # that share a deployer and salt — paseo-next-v2 and preview differ only by TLD
 # and by their Browse Publisher.
 #
+# `bulletin_authorizer` is the derivation holding Bulletin Authorizer rights in
+# `TransactionStorage.AllowedAuthorizers`, and it differs per env: paseo-next-v2
+# lists //Alice, PreviewNet only //Eve. Verified live 2026-08-20.
+#
 # Only environments dotkit can define centrally and has verified live ship here.
 # Anything machine-local, or whose endpoints aren't published upstream, belongs in
 # the overlay rather than in the binary.
@@ -34,6 +38,7 @@ registry = "0xf34054fd76BbF85f216cf9908226D5f0A72E50CA"
 pop_rules = "0x747B456bE03aec0b42bd85C51513730FBD45DA31"
 publisher = "0x1875B90A61705917945f9B7C6Ff7819Ad48A198e"
 
+bulletin_authorizer = "//Alice"
 # PreviewNet keeps the `.dot` TLD until its next wipe, after which it becomes
 # `.test`. Same CREATE3 contract set as Paseo v2; its own Browse Publisher.
 [preview]
@@ -49,3 +54,4 @@ registrar = "0x4f06E818Ba3d987704fd91cf3d868E4b019106Ab"
 registry = "0xf34054fd76BbF85f216cf9908226D5f0A72E50CA"
 pop_rules = "0x747B456bE03aec0b42bd85C51513730FBD45DA31"
 publisher = "0x5a3c111278ec98f327466c9ab7a5e0e0f5047acc"
+bulletin_authorizer = "//Eve"

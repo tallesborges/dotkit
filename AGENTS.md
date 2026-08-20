@@ -54,6 +54,17 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
 
 ## Live-write commands (don't run to "test")
 
+- **Bulletin authorization is env-specific and must never be batched.** The Authorizer
+  lives in `TransactionStorage.AllowedAuthorizers` and differs per env — `//Alice` on
+  paseo-next-v2, `//Eve` on PreviewNet (where `//Alice` is rejected `BadSigner`) — so it
+  ships as `bulletin_authorizer` in `assets/envs.toml`, not hardcoded. Grant it with one
+  **direct** `authorize_account` extrinsic per account: the feeless exemption is derived
+  from the top-level call by the chain's custom `AuthorizeCall`/`ValidateAuthorizedCalls`
+  extensions, so a `utility.batch_all` wrapper drops it and validation fails
+  `Inability to pay some fees` (Authorizers normally hold zero balance). Grants are also
+  debited from the Authorizer's own budget — oversized ones fail
+  `InsufficientAuthorizerBudget`, so defaults stay at 1000 txs / 100 MB, matching
+  `paritytech/bulletin-deploy`.
 The signed `just` recipes (`deploy`, `register`, `set`, `store`) and their `dotkit`
 subcommands submit **real transactions to paseo-next-v2** — they register actual `.paseo`
 names, spend testnet funds, and write to Bulletin. Don't run them just to check the build;

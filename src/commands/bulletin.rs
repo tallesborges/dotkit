@@ -1,7 +1,7 @@
 use crate::bulletin;
 use crate::chain;
 use crate::chain::config::bulletin as bulletin_rt;
-use crate::env::Env;
+use crate::env::{self, Env};
 use crate::pool;
 use crate::ui;
 use anyhow::{bail, Context, Result};
@@ -45,10 +45,10 @@ pub enum Cmd {
         #[arg(long)]
         address: Option<String>,
         /// Transaction count to authorize.
-        #[arg(long, default_value_t = 1_000_000)]
+        #[arg(long, default_value_t = DEFAULT_AUTH_TRANSACTIONS)]
         transactions: u32,
-        /// Byte allowance to authorize (default: 1 GiB).
-        #[arg(long, default_value_t = 1_073_741_824)]
+        /// Byte allowance to authorize.
+        #[arg(long, default_value_t = DEFAULT_AUTH_BYTES)]
         bytes: u64,
     },
     /// Manage the private per-machine upload pool (`~/.dotkit/pool.toml`). Testnet-only.
@@ -59,8 +59,9 @@ pub enum Cmd {
 #[derive(Subcommand)]
 pub enum PoolCmd {
     /// Generate + persist a private pool keystore, print its `//deploy/N` accounts,
-    /// and authorize them for Bulletin storage. Authorization is signed by the testnet
-    /// Authorizer `//Alice` by default (override with global `--mnemonic`/`--derivation-path`);
+    /// and authorize them for Bulletin storage. Authorization is signed by the env's
+    /// `bulletin_authorizer` (`//Alice` on paseo-next-v2, `//Eve` on preview) unless
+    /// overridden with global `--mnemonic`/`--derivation-path`;
     /// pass `--skip-authorize` to only generate the keystore offline.
     Init {
         /// Number of //deploy/N accounts to derive.
@@ -75,8 +76,8 @@ pub enum PoolCmd {
     },
     /// Show the private pool accounts (offline; no chain access).
     Status,
-    /// Authorize every pool account for Bulletin storage in one `utility.batch_all`.
-    /// Signer defaults to `//Alice` (the testnet Authorizer); override with global
+    /// Authorize every pool account for Bulletin storage, one call per account.
+    /// Signer defaults to the env's `bulletin_authorizer`; override with global
     /// `--mnemonic`/`--derivation-path`. Idempotent: already-authorized accounts are skipped.
     Authorize {
         /// Transaction count to authorize per account.
@@ -261,6 +262,34 @@ async fn verify(env: &Env, cid_str: String) -> Result<()> {
 /// store/status this does not use the storage pool: the signer must hold Bulletin
 /// Authorizer privileges (pass one via `--mnemonic`), else the chain returns
 /// `BadOrigin`.
+/// Resolve the signer for an `authorize_account` call: an explicit
+/// `--mnemonic`/`--derivation-path` always wins, otherwise the env's own
+/// `bulletin_authorizer` derived from the shared dev phrase.
+///
+/// The Authorizer is **env-specific**: paseo-next-v2 lists `//Alice` among its
+/// `AllowedAuthorizers`, PreviewNet lists only `//Eve`, and signing as the wrong
+/// one is rejected with `BadSigner`.
+fn authorizer_signer(
+    env: &Env,
+    mnemonic: Option<String>,
+    derivation_path: Option<String>,
+) -> Result<Keypair> {
+    match (mnemonic.as_deref(), derivation_path.as_deref()) {
+        (None, None) => {
+            if env.bulletin_authorizer.is_empty() {
+                bail!(
+                    "env '{}' has no known Bulletin authorizer — pass the Authorizer's \
+                     --mnemonic/--derivation-path, or set `bulletin_authorizer` in {}",
+                    env.id,
+                    env::overlay_path()?.display()
+                );
+            }
+            chain::build_signer(None, Some(&env.bulletin_authorizer))
+        }
+        (m, d) => chain::build_signer(m, d),
+    }
+}
+
 async fn authorize(
     env: &Env,
     address: Option<String>,
@@ -269,7 +298,7 @@ async fn authorize(
     mnemonic: Option<String>,
     derivation_path: Option<String>,
 ) -> Result<()> {
-    let signer = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
+    let signer = authorizer_signer(env, mnemonic, derivation_path)?;
     let who = match address {
         Some(addr) => AccountId32::from_str(&addr)
             .map_err(|e| anyhow::anyhow!("invalid SS58 address: {e}"))?,
@@ -385,9 +414,16 @@ async fn store_car(
 
 // ---- private upload pool (`bulletin pool …`) ----
 
-/// Default per-account allowances granted by `pool authorize` / `pool init`.
-const DEFAULT_AUTH_TRANSACTIONS: u32 = 1_000_000;
-const DEFAULT_AUTH_BYTES: u64 = 104_857_600;
+/// Default per-account allowances granted by `authorize` / `pool authorize`.
+///
+/// These are *per grant* and are debited from the Authorizer's own budget in
+/// `TransactionStorage.AllowedAuthorizers`, so they cannot be arbitrarily large:
+/// asking for more than the Authorizer has left fails the dispatch with
+/// `InsufficientAuthorizerBudget`. PreviewNet's `//Eve` carries ~87k transactions
+/// total, so the old 1_000_000 default could never succeed there. These match the
+/// values `paritytech/bulletin-deploy` grants (`TOPUP_TRANSACTIONS`/`TOPUP_BYTES`).
+const DEFAULT_AUTH_TRANSACTIONS: u32 = 1_000;
+const DEFAULT_AUTH_BYTES: u64 = 100_000_000;
 
 async fn pool_init(
     env: &Env,
@@ -526,13 +562,17 @@ async fn pool_authorize(
     authorize_pool(env, &p, mnemonic, derivation_path, transactions, bytes).await
 }
 
-/// Authorize every account of `p` for Bulletin storage in one `utility.batch_all`.
-/// Signs with the caller's `--mnemonic`/`--derivation-path` when given, otherwise the
-/// testnet Authorizer `//Alice`. Idempotent on *still-valid* authorizations: an
+/// Authorize every account of `p` for Bulletin storage, one direct
+/// `authorize_account` extrinsic per account. Signs with the caller's
+/// `--mnemonic`/`--derivation-path` when given, otherwise the env's
+/// `bulletin_authorizer`. Idempotent on *still-valid* authorizations: an
 /// account is (re)authorized when it has no authorization or its authorization has
 /// **expired** (expiry block already passed) — a bare presence check would leave an
 /// expired pool stuck, since the record lingers on-chain but no longer grants free
 /// storage (stores then fail with "balance too low").
+///
+/// Deliberately **not** a `utility.batch_all`: batching loses the Authorizer's
+/// feeless exemption — see [`bulletin::authorize_bulletin_account`].
 async fn authorize_pool(
     env: &Env,
     p: &pool::Pool,
@@ -543,12 +583,8 @@ async fn authorize_pool(
 ) -> Result<()> {
     let accts = pool::accounts(p)?;
 
-    // Authorizer signer: default to the testnet Authorizer `//Alice`; otherwise
-    // honour an explicit --mnemonic/--derivation-path.
-    let signer = match (mnemonic.as_deref(), derivation_path.as_deref()) {
-        (None, None) => chain::build_signer(None, Some("//Alice"))?,
-        (m, d) => chain::build_signer(m, d)?,
-    };
+    // Authorizer signer: the env's own authorizer unless the caller overrides it.
+    let signer = authorizer_signer(env, mnemonic, derivation_path)?;
 
     let client = bulletin::bulletin_client(env).await?;
     let current_block = client.at_current_block().await?.block_number();
@@ -593,12 +629,19 @@ async fn authorize_pool(
         return Ok(());
     }
 
-    ui::step(format!(
-        "authorize {} account(s) via utility.batch_all",
-        pending.len()
-    ));
-    let tx =
-        bulletin::batch_authorize_accounts(&client, &signer, &pending, transactions, bytes).await?;
+    ui::step(format!("authorize {} account(s)", pending.len()));
+    let mut tx_hashes = Vec::with_capacity(pending.len());
+    for who in &pending {
+        let tx = bulletin::authorize_bulletin_account(&client, &signer, *who, transactions, bytes)
+            .await?;
+        if !ui::json() {
+            ui::kv(
+                &ui::ellipsize(&who.to_string()),
+                format!("0x{}", hex::encode(tx)),
+            );
+        }
+        tx_hashes.push(format!("0x{}", hex::encode(tx)));
+    }
 
     if ui::json() {
         ui::emit(&json!({
@@ -606,13 +649,12 @@ async fn authorize_pool(
             "skipped": accts.len() - pending.len(),
             "transactions": transactions,
             "bytes": bytes,
-            "tx": format!("0x{}", hex::encode(tx)),
+            "txs": tx_hashes,
         }));
     } else {
         ui::success(format!("authorized {} account(s)", pending.len()));
         ui::kv("txs", transactions);
         ui::kv("bytes", bytes);
-        ui::kv("tx", format!("0x{}", hex::encode(tx)));
     }
     Ok(())
 }

@@ -45,6 +45,7 @@ struct EnvEntry {
     registry: Option<String>,
     pop_rules: Option<String>,
     publisher: Option<String>,
+    bulletin_authorizer: Option<String>,
 }
 
 impl EnvEntry {
@@ -70,6 +71,7 @@ impl EnvEntry {
             registry,
             pop_rules,
             publisher,
+            bulletin_authorizer,
         );
     }
 }
@@ -128,6 +130,12 @@ pub struct Env {
     /// Browse). Deployed per-env from `paritytech/browse` and bound to that env's
     /// TLD; empty when the env has none (dotkit refuses `--publish` then).
     pub publisher: String,
+    /// Derivation path of the account holding Bulletin Authorizer rights on this
+    /// env's `TransactionStorage.AllowedAuthorizers`. Env-specific: paseo-next-v2
+    /// lists `//Alice`, PreviewNet only `//Eve` (signing as `//Alice` there fails
+    /// with `BadSigner`). Empty when unknown — `bulletin authorize` then demands an
+    /// explicit `--mnemonic`/`--derivation-path`.
+    pub bulletin_authorizer: String,
     pub source: EnvSource,
 }
 
@@ -224,6 +232,7 @@ impl Env {
             registry: entry.registry.unwrap_or_default(),
             pop_rules: entry.pop_rules.unwrap_or_default(),
             publisher: entry.publisher.unwrap_or_default(),
+            bulletin_authorizer: entry.bulletin_authorizer.unwrap_or_default(),
             source,
         })
     }
@@ -281,6 +290,31 @@ mod tests {
             "0x7F74D7CD50f5a834270E2ad395a01b01891AB37d"
         );
         assert_eq!(env.registry, "0xf34054fd76BbF85f216cf9908226D5f0A72E50CA");
+    }
+
+    /// The Bulletin Authorizer differs per env — paseo-next-v2 lists `//Alice`,
+    /// PreviewNet only `//Eve`, and signing as the wrong one fails `BadSigner`.
+    #[test]
+    fn builtin_envs_pin_their_bulletin_authorizer() {
+        let entry = parse(BUILTIN, "builtin").unwrap();
+        for (id, expected) in [("paseo-next-v2", "//Alice"), ("preview", "//Eve")] {
+            let env = Env::from_entry(id, entry[id].clone(), EnvSource::Builtin).unwrap();
+            assert_eq!(env.bulletin_authorizer, expected, "authorizer for {id}");
+        }
+    }
+
+    /// A wipe can move the Authorizer, so the overlay must be able to patch it —
+    /// which silently fails if the field is missing from `EnvEntry::patch`.
+    #[test]
+    fn overlay_can_patch_the_bulletin_authorizer() {
+        let mut base = parse(BUILTIN, "builtin").unwrap();
+        let overlay = parse("[preview]\nbulletin_authorizer = \"//Dave\"\n", "overlay").unwrap();
+        base.get_mut("preview")
+            .unwrap()
+            .patch(overlay["preview"].clone());
+        let env = Env::from_entry("preview", base["preview"].clone(), EnvSource::Patched).unwrap();
+        assert_eq!(env.bulletin_authorizer, "//Dave");
+        assert_eq!(env.tld, "dot");
     }
 
     #[test]

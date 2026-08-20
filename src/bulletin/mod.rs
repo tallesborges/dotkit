@@ -5,7 +5,7 @@ pub mod storage;
 pub mod upload;
 
 pub use storage::{
-    authorization, authorize_bulletin_account, batch_authorize_accounts, bulletin_client,
-    content_hash, raw_cid, store_block, Hashing, PreparedBlock, StoreOutcome, MAX_TRANSACTION_SIZE,
+    authorization, authorize_bulletin_account, bulletin_client, content_hash, raw_cid, store_block,
+    Hashing, PreparedBlock, StoreOutcome, MAX_TRANSACTION_SIZE,
 };
 pub use upload::{read_car_prepared, store_car_file, store_prepared_blocks};

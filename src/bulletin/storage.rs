@@ -442,6 +442,15 @@ pub async fn store_block(
 /// quota, submitting a signed `authorize_account` extrinsic. The `signer` must
 /// hold Authorizer privileges on the chain, else the extrinsic fails with
 /// `BadOrigin` (surfaced to the caller). Returns the finalized extrinsic hash.
+///
+/// **Must stay a direct, top-level call.** Bulletin grants an Authorizer's
+/// `feeless` exemption from the outer call via its custom `AuthorizeCall` /
+/// `ValidateAuthorizedCalls` transaction extensions, so wrapping this in
+/// `utility.batch_all` loses the exemption and validation fails with
+/// `Inability to pay some fees` whenever the Authorizer holds no balance —
+/// which is the normal case (PreviewNet's `//Eve` has a zero free balance).
+/// Authorize several accounts by calling this once per account, exactly as
+/// `paritytech/bulletin-deploy` does.
 pub async fn authorize_bulletin_account(
     client: &OnlineClient<BulletinConfig>,
     signer: &Keypair,
@@ -503,43 +512,4 @@ pub async fn authorization(
         }
         None => Ok(None),
     }
-}
-
-/// Authorize many accounts in a single `utility.batch_all`, signed by an
-/// Authorizer. Atomic: if any inner `authorize_account` fails the whole batch
-/// rolls back. The signer must hold Bulletin Authorizer privileges (else
-/// `BadOrigin`). Returns the finalized extrinsic hash.
-pub async fn batch_authorize_accounts(
-    client: &OnlineClient<BulletinConfig>,
-    signer: &Keypair,
-    accounts: &[AccountId32],
-    transactions: u32,
-    bytes: u64,
-) -> Result<[u8; 32]> {
-    let calls: Vec<bulletin::runtime_types::bulletin_paseo_runtime::RuntimeCall> = accounts
-        .iter()
-        .map(|who| {
-            bulletin::runtime_types::bulletin_paseo_runtime::RuntimeCall::TransactionStorage(
-                bulletin::runtime_types::pallet_bulletin_transaction_storage::pallet::Call::authorize_account {
-                    who: *who,
-                    transactions,
-                    bytes,
-                },
-            )
-        })
-        .collect();
-    let call = bulletin::tx().utility().batch_all(calls);
-    let events = client
-        .tx()
-        .await?
-        .sign_and_submit_then_watch_default(&call, signer)
-        .await
-        .context("submitting utility.batch_all(authorize_account)")?
-        .wait_for_finalized_success()
-        .await
-        .context(
-            "batch_all authorize did not finalize successfully \
-             (the signer must hold Bulletin Authorizer privileges)",
-        )?;
-    Ok(events.extrinsic_hash().0)
 }
