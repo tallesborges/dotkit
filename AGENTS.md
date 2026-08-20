@@ -23,10 +23,12 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
 - **`--env` is a matched set** — it selects the RPCs, the DotNS **TLD** and the Asset Hub
   contract addresses together; never mix envs. DotNS is deployed via CREATE3, so
   `paseo-next-v2` and `preview` share one address set and differ by TLD (`paseo` vs
-  `dot`) and Publisher. Every name normalization / namehash / label
+  `test`) and Publisher. Every name normalization / namehash / label
   strip goes through `env.tld` (`dotns::normalize_name`, `dotns::strip_tld`) — a
   hardcoded `.dot` silently reads and writes the wrong namespace. Re-verify addresses
-  against `paritytech/dotns-releases` after any chain wipe.
+  **and the TLD** against `paritytech/dotns-releases` after any chain wipe: a stale TLD
+  fails silently, the register lands under the other base node and the ownership read
+  returns the zero address (PreviewNet, 2026-08-20).
 - **Envs are data, not code** — the table lives in `assets/envs.toml`, compiled in with
   `include_str!`, and is overlaid by `~/.dotkit/envs.toml` merged **by id**: an existing
   id patches only the fields it lists, a new id adds an env. Add or fix an environment

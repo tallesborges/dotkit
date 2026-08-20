@@ -39,14 +39,16 @@ pop_rules = "0x747B456bE03aec0b42bd85C51513730FBD45DA31"
 publisher = "0x1875B90A61705917945f9B7C6Ff7819Ad48A198e"
 
 bulletin_authorizer = "//Alice"
-# PreviewNet keeps the `.dot` TLD until its next wipe, after which it becomes
-# `.test`. Same CREATE3 contract set as Paseo v2; its own Browse Publisher.
+# PreviewNet was re-genesised and its DotNS base node is now `.test` (verified
+# live 2026-08-20: registering a label through the RegistrarController mints under
+# the `.test` namehash, and the `.dot` namehash reads back unregistered).
+# Same CREATE3 contract set as Paseo v2; its own Browse Publisher.
 [preview]
 name = "PreviewNet"
 bulletin_rpc = "wss://previewnet.substrate.dev/bulletin"
 asset_hub_rpc = "wss://previewnet.substrate.dev/asset-hub"
 ipfs_gateway = "https://previewnet.substrate.dev/ipfs"
-tld = "dot"
+tld = "test"
 web_gateway = "testnet.li"
 dotns_content_resolver = "0x7F74D7CD50f5a834270E2ad395a01b01891AB37d"
 registrar_controller = "0xBdaA01bD1bA67d709F2b1fF286Da0d854977EA30"

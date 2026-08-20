@@ -106,7 +106,7 @@ dotkit asset-hub name register myapp.paseo
 | `--env` | Bulletin + Asset Hub | Notes |
 |---|---|---|
 | `paseo-next-v2` (default) | Paseo Next v2 | TLD `.paseo`; full support; resolves at `<name>.paseo.li`. |
-| `preview` | PreviewNet | TLD `.dot` (until its next wipe); same CREATE3 contract set as Paseo v2. |
+| `preview` | PreviewNet | TLD `.test` (since its 2026-08 re-genesis); same CREATE3 contract set as Paseo v2. |
 
 Both are verified live. The table is data, not code: built-in defaults live in
 `assets/envs.toml` (compiled into the binary) and are overlaid by `~/.dotkit/envs.toml`,

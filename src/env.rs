@@ -314,7 +314,7 @@ mod tests {
             .patch(overlay["preview"].clone());
         let env = Env::from_entry("preview", base["preview"].clone(), EnvSource::Patched).unwrap();
         assert_eq!(env.bulletin_authorizer, "//Dave");
-        assert_eq!(env.tld, "dot");
+        assert_eq!(env.tld, "test");
     }
 
     #[test]

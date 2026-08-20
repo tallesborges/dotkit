@@ -9,7 +9,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 
 - **Binary:** `dotkit` on PATH, or build from source: `cargo build --release` → `./target/release/dotkit`.
 - **Default env:** `paseo-next-v2` — TLD **`.paseo`**, resolves at `https://<name>.paseo.li`.
-- **TLD is per-env.** DotNS was redeployed on Paseo v2 on 2026-08-11 and Paseo names now end in **`.paseo`**, not `.dot`. `preview` (PreviewNet) is still `.dot` until its next wipe. dotkit appends the selected env's TLD when you omit it, so prefer bare labels (`myapp`) in scripts and let `--env` decide.
+- **TLD is per-env.** DotNS was redeployed on Paseo v2 on 2026-08-11 and Paseo names now end in **`.paseo`**, not `.dot`. `preview` (PreviewNet) moved to **`.test`** after its 2026-08 re-genesis. dotkit appends the selected env's TLD when you omit it, so prefer bare labels (`myapp`) in scripts and let `--env` decide.
 - **Envs are config, not code.** Built-in defaults ship in the binary; `~/.dotkit/envs.toml` overlays them **by id** (existing id = patch those fields, new id = add an env). See the Environments section — adding a chain or fixing a post-wipe address needs no rebuild.
 
 ## Command surface
@@ -49,7 +49,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | `--env` | TLD | Notes |
 |---|---|---|
 | `paseo-next-v2` *(default)* | `.paseo` | Full support, `<name>.paseo.li`. Verified live. |
-| `preview` | `.dot` | PreviewNet; becomes `.test` at its next wipe. Same CREATE3 contracts as Paseo v2. Verified live. |
+| `preview` | `.test` | PreviewNet; `.test` since its 2026-08 re-genesis. Same CREATE3 contracts as Paseo v2. Verified live. |
 
 Those are the only two that ship in the binary — an env is built in only if it can be
 defined centrally *and* has been verified against a live chain. Any other network (a
@@ -184,7 +184,7 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 - **Name digits:** none or exactly two, else the register reverts.
 - **`<name>.paseo.li`** is the v2 gateway; `<name>.dot.li` points at the dead Summit chain — never use it for v2.
 - **Secrets** via `$MNEMONIC` / `$DOTNS_MNEMONIC`, not `--mnemonic` in shell history.
-- **`preview` env** shares Paseo v2's CREATE3 contract set but keeps the **`.dot`** TLD until PreviewNet's next wipe. Never pass a `.paseo` name to `--env preview` (or vice versa) — the TLD is part of the namehash, so it silently targets a different node. Pass bare labels and this can't happen.
+- **`preview` env** shares Paseo v2's CREATE3 contract set but uses the **`.test`** TLD since PreviewNet's 2026-08 re-genesis. Never pass a `.paseo` name to `--env preview` (or vice versa) — the TLD is part of the namehash, so it silently targets a different node: a register succeeds under the other TLD and the ownership read comes back zero. Pass bare labels and this can't happen.
 - **`InvalidTransaction::Stale` ("Transaction is outdated") is a nonce race**, not a config problem. The default signer is the shared public dev phrase, used concurrently by others and CI. Retry.
 - **Name transfer** pays the registrar's quoted friction fee (0 for same-tier/upward moves, a fee for downward moves); only the current NFT owner can transfer, and the recipient `<to>` is a `0x` H160 or SS58 address.
 - **Publisher (`--publish` / `name publish|unpublish`)** is per-env, owner-only, base-label-only, and personhood-gated + rate-limited. In `deploy` it's non-fatal by default (`--fail-on-publish-error` to hard-fail).
