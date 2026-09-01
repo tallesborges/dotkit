@@ -25,6 +25,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | `bulletin authorize [--address <ss58>] [--transactions N] [--bytes N]` | Grant an account Bulletin storage quota (default `1000` txs / `100 MB`). Signer needs **Authorizer** privileges and defaults to the env's `bulletin_authorizer` (`//Alice` on paseo-next-v2, `//Eve` on preview); override with `--mnemonic`/`--derivation-path`. Not the pool. |
 | `asset-hub transfer <dest> <plancks>` | Send native PAS. |
 | `asset-hub map` | Ensure the signer has an H160 mapping (`Revive.map_account`). |
+| `asset-hub status` | Per-address deployment state of the env's six DotNS contracts (`✓ deployed` / `✗ absent` / `– not configured`), via code-at-address. Read-only, no signer. This is how you check whether a post-wipe redeployment has landed. |
 | `asset-hub name resolve <name>` | Name → contenthash CID. |
 | `asset-hub name owner-of <name>` (alias `oo`) | Whether a name is registered and who owns it (H160). |
 | `asset-hub name lookup <name>` | Read-only overview: owner, required tier + status, base price, contenthash. |
@@ -170,7 +171,7 @@ dotkit asset-hub name subnode create app.myapp.paseo 0xabc… # or an SS58 addre
 
 dotkit surfaces the real EVM revert reason. Map it:
 
-- `no contract code at 0x… — the DotNS contracts are not deployed on this environment` → that env's DotNS suite is absent, not misconfigured. Expected on a freshly wiped chain until Parity redeploys; the addresses are CREATE3-deterministic so they come back unchanged and **no dotkit change is needed**. Use an `--env` whose suite is still deployed in the meantime. (Paseo Next v2 has been in this state since the 2026-09-01 wipe.)
+- `no DotNS contracts are deployed on <env>; awaiting the post-wipe redeployment` (or `N of 6 DotNS contracts are not deployed on <env>`) → that env's DotNS suite is absent, not misconfigured. dotkit probes code-at-address **before** any ABI decoding, lists every missing contract by name and address, and refuses signed calls before spending fees. The addresses are CREATE3-deterministic so they come back unchanged and **no dotkit change is needed** — run `dotkit --env <id> asset-hub status` to watch for the redeploy. (Paseo Next v2 has been in this state since the 2026-09-01 wipe; the Browse **publisher** is additionally absent on *both* built-in envs.)
 - `requires Lite/Full personhood, but the signer … has NoStatus` → the name is personhood-gated; use a verified signer (`sudo.personhood.dev/personhood-faucet`, env Next V2) or pick an open (long-base) name. dotkit bails here **before** committing.
 - `Name must have no digit suffix or exactly 2 digit suffix` → rename (0 or 2 trailing digits).
 - `custom error 0x14c417b5 …` echoing your H160 → not authorized (you don't own the node).
@@ -197,5 +198,7 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 - **`InsufficientAuthorizerBudget`** means the grant exceeds what the Authorizer has left in `AllowedAuthorizers` (its own `quota` is debited per grant), not that your account is at fault. Lower `--transactions`/`--bytes`; the defaults (`1000` / `100 MB`) are sized to fit.
 - **`--json`** makes every command print one JSON object to stdout (read commands like `name owner-of`/`lookup`, `bulletin verify`, `account info` are read-only and script-friendly); on failure it prints `{"error": …}` to stderr.
 - **Single blob > 2 MiB** is not yet supported (`bulletin store` bails; Kubo/native chunking keeps deploy blocks ≤256 KiB).
+- **Every DotNS command preflights the contracts it needs.** dotkit probes code-at-address before ABI-decoding a read or signing a write (`deploy` checks registry + controller + resolver in one burst, before uploading anything). Probes are memoized per process and never added to commands that don't touch DotNS. `asset-hub status` shows the whole picture.
+- **The Browse Publisher is currently absent on both built-in envs**, so `--publish` / `name publish|unpublish` cannot work anywhere right now. dotkit pins the superseded v2 addresses (`0x1875B90A…` paseo, `0x5a3c1112…` preview); upstream `paritytech/browse` has since moved to v3.0.0 at `0x01167f228A729f8e50f18aa7189f59b659155D09` on both, which is *also* not deployed. Re-check `evm/deployments.json` before trusting `publisher` again.
 - **`asset-hub name content <name>` takes the name and nothing else.** It is a clap `external_subcommand`, so any global flag written *after* it is swallowed instead of applied — put them first: `dotkit --env preview asset-hub name content myapp`. Trailing flags are now rejected loudly; before that they silently read the default env's namespace.
 - **`--env` carries a matched set** — the Bulletin RPC, the DotNS **TLD** and the Asset Hub contract addresses go together; select an env, don't mix them. After a chain wipe, re-verify against `paritytech/dotns-releases` before trusting a deploy.
