@@ -104,6 +104,28 @@ pub enum SubnodeCmd {
     },
 }
 
+/// Extract the name from `name content <name>`.
+///
+/// [`ContentCmd::Read`] is an `external_subcommand`, so clap hands it every
+/// remaining token verbatim — including global flags like `--env`, which are
+/// then never parsed and silently fall back to their defaults. Reading the
+/// wrong environment's contenthash is worse than refusing, so anything beyond a
+/// single bare name is rejected with the working invocation spelled out.
+fn content_read_name(args: &[String]) -> Result<&String> {
+    let name = args.first().context("usage: name content <name>")?;
+    if let Some(extra) = args.get(1) {
+        bail!(
+            "`name content` takes exactly one argument, got an extra `{extra}`.\n  It is an \
+             external subcommand, so trailing global flags are swallowed rather than applied — \
+             put them before the subcommand: `dotkit --env <id> asset-hub name content {name}`"
+        );
+    }
+    if name.starts_with('-') {
+        bail!("expected a name, got the flag `{name}` — see `name content --help`");
+    }
+    Ok(name)
+}
+
 pub async fn run(
     env: &Env,
     cmd: Cmd,
@@ -148,7 +170,7 @@ pub async fn run(
             publish(env, &name, false, mnemonic, derivation_path).await?;
         }
         Cmd::Content(ContentCmd::Read(args)) => {
-            let raw = args.first().context("usage: name content <name>")?;
+            let raw = content_read_name(&args)?;
             let name = dotns::normalize_name(raw, &env.tld);
             let client = chain::asset_hub_client(env).await?;
             let contenthash = dotns::resolve_contenthash(&client, env, &name).await?;
@@ -451,4 +473,40 @@ async fn subnode_create(
         ui::kv("node", format!("0x{}", hex::encode(outcome.subnode)));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_read_name;
+
+    #[test]
+    fn content_read_accepts_a_bare_name() {
+        let args = vec!["myapp.paseo".to_string()];
+        assert_eq!(content_read_name(&args).unwrap(), "myapp.paseo");
+    }
+
+    #[test]
+    fn content_read_rejects_swallowed_global_flags() {
+        // `--env` after the subcommand is captured by the external subcommand and
+        // never applied, so it must fail loudly instead of reading the default env.
+        let args = vec![
+            "myapp.paseo".to_string(),
+            "--env".to_string(),
+            "preview".to_string(),
+        ];
+        let err = content_read_name(&args).unwrap_err().to_string();
+        assert!(err.contains("--env"), "{err}");
+        assert!(err.contains("before the subcommand"), "{err}");
+    }
+
+    #[test]
+    fn content_read_rejects_a_leading_flag() {
+        let args = vec!["--json".to_string()];
+        assert!(content_read_name(&args).is_err());
+    }
+
+    #[test]
+    fn content_read_requires_a_name() {
+        assert!(content_read_name(&[]).is_err());
+    }
 }
