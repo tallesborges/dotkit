@@ -1,4 +1,5 @@
 use crate::chain;
+use crate::dotns;
 use crate::env::Env;
 use crate::ui;
 use anyhow::{Context, Result};
@@ -17,6 +18,8 @@ pub enum Cmd {
     },
     /// Ensure the signer has an H160 mapping (Revive.map_account).
     Map,
+    /// Report whether this env's DotNS contracts are deployed (code-at-address).
+    Status,
     /// DotNS naming ops (resolve, register, content records).
     #[command(subcommand)]
     Name(super::name::Cmd),
@@ -65,6 +68,66 @@ pub async fn run(
             }
         }
         Cmd::Name(cmd) => super::name::run(env, cmd, mnemonic, derivation_path).await?,
+        Cmd::Status => status(env).await?,
+    }
+    Ok(())
+}
+
+/// `asset-hub status` — per-address deployment state for the env's DotNS
+/// contracts. This is the check for "has the post-wipe redeployment landed
+/// yet?", so it reports every contract rather than failing on the first absent
+/// one, and exits non-zero only when nothing is deployed.
+async fn status(env: &Env) -> Result<()> {
+    let client = chain::asset_hub_client(env).await?;
+    let statuses = dotns::probe(&client, env, &dotns::Contract::ALL).await?;
+
+    let deployed = statuses
+        .iter()
+        .filter(|s| s.state == dotns::State::Deployed)
+        .count();
+    let configured = statuses
+        .iter()
+        .filter(|s| s.state != dotns::State::Unconfigured)
+        .count();
+
+    if ui::json() {
+        ui::emit(&serde_json::json!({
+            "env": env.id,
+            "asset_hub": env.asset_hub_rpc,
+            "deployed": deployed,
+            "configured": configured,
+            "contracts": statuses.iter().map(|s| serde_json::json!({
+                "contract": s.contract.label(),
+                "address": s.address,
+                "state": match s.state {
+                    dotns::State::Deployed => "deployed",
+                    dotns::State::Absent => "absent",
+                    dotns::State::Unconfigured => "unconfigured",
+                },
+            })).collect::<Vec<_>>(),
+        }));
+        return Ok(());
+    }
+
+    ui::kv("env", &env.id);
+    ui::kv("asset_hub", &env.asset_hub_rpc);
+    for s in &statuses {
+        let line = match s.state {
+            dotns::State::Deployed => format!("✓ deployed  {}", s.address),
+            dotns::State::Absent => format!("✗ absent    {}", s.address),
+            dotns::State::Unconfigured => "– not configured for this env".to_string(),
+        };
+        ui::kv(s.contract.key(), line);
+    }
+    if deployed == 0 {
+        ui::note(format!(
+            "no DotNS contracts are deployed on {}; awaiting the post-wipe redeployment",
+            env.id
+        ));
+    } else {
+        ui::note(format!(
+            "{deployed}/{configured} configured contracts deployed"
+        ));
     }
     Ok(())
 }
