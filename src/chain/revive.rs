@@ -194,6 +194,12 @@ pub async fn revive_call(
     value: u128,
     calldata: Vec<u8>,
 ) -> Result<[u8; 32]> {
+    // A write's return data is legitimately empty, so unlike `revive_view` there
+    // is no post-hoc signal that `dest` is bare: pallet_revive would accept the
+    // call, the dry-run would pass, and the submitted no-op would report a tx
+    // hash as if it had bound something. Check before spending fees.
+    bail_if_no_code(client, dest).await?;
+
     ensure_mapped(client, signer).await?;
 
     let origin = account_id(signer);
@@ -218,9 +224,6 @@ pub async fn revive_call(
         Err(err) => bail!("dry-run failed on chain, refusing to submit: {err:?}"),
     };
     if exec.flags.bits & 1 != 0 {
-        if exec.data.is_empty() {
-            bail_if_no_code(client, dest).await?;
-        }
         bail!(
             "dry-run reverted, refusing to submit: {}",
             revert_reason(&exec.data)
