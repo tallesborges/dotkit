@@ -101,7 +101,7 @@ The registrar's `classifyName` (on `POP_RULES`) gates a label by shape + base le
 | Very short (`ab`) | 3 | Reserved |
 
 - **A label must end in NO digits or EXACTLY 2 digits.** 1 or 3+ trailing digits → the contract reverts: `Name must have no digit suffix or exactly 2 digit suffix`.
-- `dotkit name register` and `deploy --register` handle **open (0) and personhood-gated Lite (1) / Full (2)**; **Reserved (3)** is rejected (governance-only). For Lite/Full, dotkit pre-checks the owner's `personhoodStatus(owner, "dotns")` on the AH precompile (`0x…0a010000`) and bails **before committing** if the signer's tier is too low.
+- `dotkit name register` and `deploy --register` handle **open (0)** names. **Reserved (3)** is rejected (governance-only), and since the 2026-09-01 pricing rework **Lite (1) / Full (2) are no longer purchasable at all**: `priceWithoutCheck` reverts `Short names are not for sale`, so the public RegistrarController path cannot price them and dotkit bails before committing. Personhood-gated names now come only from the PoP gateway (`dotnsGateway.register_name`, which needs a People-chain ring-membership proof) — a path dotkit does not implement. dotkit still pre-checks the owner's `personhoodStatus(owner, "dotns")` on the AH precompile (`0x…0a010000`) and bails **before committing** if the signer's tier is too low, so an unverified signer stops there first.
 - Lite/Full names need a **personhood-verified signer** (Full satisfies Lite). Get testnet personhood at `sudo.personhood.dev/personhood-faucet` (env "Next V2"); the signer must also be funded + H160-mapped on Asset Hub. Note: People-chain personhood is **not** auto-bridged — bind it to the `dotns` context via `sudo.personhood.dev/dotns-bootstrap` first.
 
 ## Deploy workflow
@@ -171,7 +171,8 @@ dotkit asset-hub name subnode create app.myapp.paseo 0xabc… # or an SS58 addre
 
 dotkit surfaces the real EVM revert reason. Map it:
 
-- `no DotNS contracts are deployed on <env>; awaiting the post-wipe redeployment` (or `N of 6 DotNS contracts are not deployed on <env>`) → that env's DotNS suite is absent, not misconfigured. dotkit probes code-at-address **before** any ABI decoding, lists every missing contract by name and address, and refuses signed calls before spending fees. The addresses are CREATE3-deterministic so they come back unchanged and **no dotkit change is needed** — run `dotkit --env <id> asset-hub status` to watch for the redeploy. (Paseo Next v2 has been in this state since the 2026-09-01 wipe; the Browse **publisher** is additionally absent on *both* built-in envs.)
+- `no DotNS contracts are deployed on <env>; awaiting the post-wipe redeployment` (or `N of 6 DotNS contracts are not deployed on <env>`) → that env's DotNS suite is absent, not misconfigured. dotkit probes code-at-address **before** any ABI decoding, lists every missing contract by name and address, and refuses signed calls before spending fees. The addresses are CREATE3-deterministic so they come back unchanged and **no dotkit change is needed** — run `dotkit --env <id> asset-hub status` to watch for the redeploy. (Paseo Next v2's DotNS suite was redeployed 2026-09-01 ~16:15 UTC to the same CREATE3 addresses and is live again; the Browse **publisher** remains absent on *both* built-in envs, at both its v2 and current v3 addresses, so `--publish` is still broken everywhere.)
+- `not for sale (Short names are not for sale)` in `name lookup`, or that revert from `register` → the label is Lite/Full tier and cannot be bought through the public registrar at any price. Pick an open (long-base, no-digit-suffix) label, or obtain it through the PoP gateway. Not a dotkit or funding problem.
 - `requires Lite/Full personhood, but the signer … has NoStatus` → the name is personhood-gated; use a verified signer (`sudo.personhood.dev/personhood-faucet`, env Next V2) or pick an open (long-base) name. dotkit bails here **before** committing.
 - `Name must have no digit suffix or exactly 2 digit suffix` → rename (0 or 2 trailing digits).
 - `custom error 0x14c417b5 …` echoing your H160 → not authorized (you don't own the node).
@@ -186,7 +187,7 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 
 ## Hard rules
 
-- **Open + Lite/Full** registration (Reserved rejected). Lite/Full need a personhood-verified signer; dotkit pre-checks `personhoodStatus` and bails early if the signer's tier is too low.
+- **Open-tier registration only** (Reserved rejected; Lite/Full unbuyable since 2026-09-01 — `Short names are not for sale`). Open tier is a flat **10 PAS** on paseo-next-v2. dotkit still pre-checks `personhoodStatus` and bails early if the signer's tier is too low.
 - **Name digits:** none or exactly two, else the register reverts.
 - **`<name>.paseo.li`** is the v2 gateway; `<name>.dot.li` points at the dead Summit chain — never use it for v2.
 - **Secrets** via `$MNEMONIC` / `$DOTNS_MNEMONIC`, not `--mnemonic` in shell history.
