@@ -76,6 +76,43 @@ pub async fn ensure_mapped(client: &OnlineClient<AssetHubConfig>, signer: &Keypa
     Ok(())
 }
 
+/// Byte length of the contract code deployed at `addr`, via `ReviveApi.code`.
+/// Zero means the address holds no contract.
+pub async fn code_len(client: &OnlineClient<AssetHubConfig>, addr: H160) -> Result<usize> {
+    let call = asset_hub::runtime_apis().revive_api().code(addr);
+    let code = client
+        .at_current_block()
+        .await?
+        .runtime_apis()
+        .call(call)
+        .await
+        .context("ReviveApi.code runtime call failed")?;
+    Ok(code.len())
+}
+
+/// Turn a codeless-destination call into an actionable error.
+///
+/// `pallet_revive` treats a call to an address with no contract as a successful
+/// no-op returning zero bytes, so the failure only surfaces later as an opaque
+/// ABI "buffer overrun" while decoding the absent return value. When a DotNS
+/// address is bare — as after a chain wipe, until the contracts are redeployed —
+/// every read fails that way and the real cause is invisible.
+///
+/// Only called once a result is already known to be unusable, so the extra
+/// `ReviveApi.code` round-trip never touches the success path. Returns `Ok(())`
+/// when code *is* present, leaving the original error to stand.
+async fn bail_if_no_code(client: &OnlineClient<AssetHubConfig>, dest: H160) -> Result<()> {
+    if code_len(client, dest).await? > 0 {
+        return Ok(());
+    }
+    bail!(
+        "no contract code at {dest:?} — the DotNS contracts are not deployed on this \
+         environment.\n  The addresses are CREATE3-deterministic, so they come back at the same \
+         values once Parity redeploys; nothing in dotkit needs changing.\n  Until then, use an \
+         --env whose DotNS suite is still deployed."
+    )
+}
+
 /// Best-effort human-readable reason from EVM revert returndata. Decodes the
 /// standard `Error(string)` / `Panic(uint256)` shapes (and Vyper string reverts);
 /// for a custom error surfaces its 4-byte selector, and for empty returndata
@@ -132,7 +169,15 @@ pub async fn revive_view(
         Err(err) => bail!("contract call failed on chain: {err:?}"),
     };
     if exec.flags.bits & 1 != 0 {
+        if exec.data.is_empty() {
+            bail_if_no_code(client, dest).await?;
+        }
         bail!("contract call reverted: {}", revert_reason(&exec.data));
+    }
+    // A view that returns a value never yields zero bytes from a live contract,
+    // so empty data here means the destination almost certainly holds no code.
+    if exec.data.is_empty() {
+        bail_if_no_code(client, dest).await?;
     }
     Ok(exec.data)
 }
@@ -173,6 +218,9 @@ pub async fn revive_call(
         Err(err) => bail!("dry-run failed on chain, refusing to submit: {err:?}"),
     };
     if exec.flags.bits & 1 != 0 {
+        if exec.data.is_empty() {
+            bail_if_no_code(client, dest).await?;
+        }
         bail!(
             "dry-run reverted, refusing to submit: {}",
             revert_reason(&exec.data)

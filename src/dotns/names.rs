@@ -37,28 +37,8 @@ pub async fn resolve_contenthash(
     let dest = parse_h160(&env.dotns_content_resolver)?;
     let origin = account_id(&build_signer(None, None)?);
 
-    let call = asset_hub::runtime_apis()
-        .revive_api()
-        .call(origin, dest, 0, None, None, input_data);
-    let result = client
-        .at_current_block()
-        .await?
-        .runtime_apis()
-        .call(call)
-        .await
-        .context("ReviveApi.call runtime call failed")?;
-
-    let exec = match result.result {
-        Ok(exec) => exec,
-        Err(err) => bail!("resolver call failed on chain: {err:?}"),
-    };
-    if exec.flags.bits & 1 != 0 {
-        bail!(
-            "resolver contenthash call reverted: {}",
-            revert_reason(&exec.data)
-        );
-    }
-    dotns::decode_contenthash_return(&exec.data)
+    let data = revive_view(client, origin, dest, 0, input_data).await?;
+    dotns::decode_contenthash_return(&data)
 }
 
 /// Bind a normalized DotNS `name` to `cid` by submitting a signed
@@ -355,14 +335,24 @@ pub async fn create_subnode(
         "create {subnode_name} → 0x{}",
         hex::encode(owner.0)
     ));
-    let calldata =
-        registrar::encode_set_subnode_owner(registrar::subnode_record(parent_node, sub_label, parent_label, owner));
+    let calldata = registrar::encode_set_subnode_owner(registrar::subnode_record(
+        parent_node,
+        sub_label,
+        parent_label,
+        owner,
+    ));
     let tx = revive_call(&client, signer, registry, 0, calldata).await?;
     ui::kv("tx", format!("0x{}", hex::encode(tx)));
 
     let subnode = dotns::namehash(&subnode_name);
-    let owner_data =
-        revive_view(&client, origin, registry, 0, registrar::encode_owner(subnode)).await?;
+    let owner_data = revive_view(
+        &client,
+        origin,
+        registry,
+        0,
+        registrar::encode_owner(subnode),
+    )
+    .await?;
     let onchain = registrar::decode_owner(&owner_data)?;
     if onchain.0 != owner.0 {
         bail!(
