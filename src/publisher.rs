@@ -51,7 +51,7 @@ async fn submit(env: &Env, signer: &Keypair, name: &str, publish: bool) -> Resul
     if env.publisher.is_empty() {
         bail!(
             "--{verb} is not supported on env '{}' (no Publisher contract deployed for this env)",
-            &env.id
+            env.id
         );
     }
     let full = normalize_name(name, &env.tld);
