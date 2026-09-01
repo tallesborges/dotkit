@@ -12,6 +12,7 @@ use crate::chain::revive::{
     ensure_mapped, parse_h160, revert_reason, revive_address, revive_call, revive_view,
 };
 use crate::chain::signer::{account_id, build_signer};
+use crate::dotns::deployment::{ensure_deployed, Contract};
 use crate::env::Env;
 use crate::ui;
 use anyhow::{bail, Context, Result};
@@ -32,6 +33,7 @@ pub async fn resolve_contenthash(
     env: &Env,
     name: &str,
 ) -> Result<Vec<u8>> {
+    ensure_deployed(client, env, &[Contract::ContentResolver]).await?;
     let node = dotns::namehash(name);
     let input_data = dotns::encode_contenthash_call(node);
     let dest = parse_h160(&env.dotns_content_resolver)?;
@@ -52,6 +54,7 @@ pub async fn set_contenthash(
     name: &str,
     cid: &Cid,
 ) -> Result<Vec<u8>> {
+    ensure_deployed(client, env, &[Contract::ContentResolver]).await?;
     let node = dotns::namehash(name);
     let contenthash = dotns::cid_to_contenthash(cid);
     let calldata = dotns::encode_set_contenthash_call(node, &contenthash);
@@ -70,6 +73,7 @@ pub async fn resolve_text(
     name: &str,
     key: &str,
 ) -> Result<String> {
+    ensure_deployed(client, env, &[Contract::ContentResolver]).await?;
     let node = dotns::namehash(name);
     let calldata = dotns::encode_text_call(node, key);
     let dest = parse_h160(&env.dotns_content_resolver)?;
@@ -89,6 +93,7 @@ pub async fn set_text(
     key: &str,
     value: &str,
 ) -> Result<[u8; 32]> {
+    ensure_deployed(client, env, &[Contract::ContentResolver]).await?;
     let node = dotns::namehash(name);
     let calldata = dotns::encode_set_text_call(node, key, value);
     let dest = parse_h160(&env.dotns_content_resolver)?;
@@ -105,6 +110,7 @@ pub async fn name_owner(
     env: &Env,
     name: &str,
 ) -> Result<Option<H160>> {
+    ensure_deployed(client, env, &[Contract::Registry]).await?;
     let node = dotns::namehash(name);
     let registry = parse_h160(&env.registry)?;
     let origin = account_id(&build_signer(None, None)?);
@@ -122,6 +128,7 @@ pub async fn classify_name(
     env: &Env,
     name: &str,
 ) -> Result<(u8, String)> {
+    ensure_deployed(client, env, &[Contract::PopRules]).await?;
     let label = dotns::strip_tld(name, &env.tld);
     let pop_rules = parse_h160(&env.pop_rules)?;
     let origin = account_id(&build_signer(None, None)?);
@@ -145,6 +152,7 @@ pub async fn name_price_native(
     name: &str,
     owner: H160,
 ) -> Result<u128> {
+    ensure_deployed(client, env, &[Contract::PopRules]).await?;
     let label = dotns::strip_tld(name, &env.tld);
     let pop_rules = parse_h160(&env.pop_rules)?;
     let origin = account_id(&build_signer(None, None)?);
@@ -199,6 +207,7 @@ pub async fn transfer_name(
     }
     let registrar_addr = parse_h160(&env.registrar)?;
     let client = asset_hub_client(env).await?;
+    ensure_deployed(&client, env, &[Contract::Registrar]).await?;
     ensure_mapped(&client, signer).await?;
 
     let origin = account_id(signer);
@@ -307,6 +316,7 @@ pub async fn create_subnode(
 
     let registry = parse_h160(&env.registry)?;
     let client = asset_hub_client(env).await?;
+    ensure_deployed(&client, env, &[Contract::Registry]).await?;
     ensure_mapped(&client, signer).await?;
 
     let origin = account_id(signer);
@@ -521,6 +531,16 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
     let registry = parse_h160(&env.registry)?;
 
     let client = asset_hub_client(env).await?;
+    ensure_deployed(
+        &client,
+        env,
+        &[
+            Contract::Registry,
+            Contract::RegistrarController,
+            Contract::PopRules,
+        ],
+    )
+    .await?;
     ensure_mapped(&client, signer).await?;
 
     let origin = account_id(signer);

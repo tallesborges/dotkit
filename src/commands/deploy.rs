@@ -51,6 +51,19 @@ pub async fn run(
 
     let owner = chain::build_signer(mnemonic.as_deref(), derivation_path.as_deref())?;
     let asset_hub = chain::asset_hub_client(env).await?;
+    // Deploy touches ownership, optional registration and the contenthash bind,
+    // so probe all three up front in one burst rather than failing partway
+    // through an upload that can no longer be bound to the name.
+    dotns::ensure_deployed(
+        &asset_hub,
+        env,
+        &[
+            dotns::Contract::Registry,
+            dotns::Contract::RegistrarController,
+            dotns::Contract::ContentResolver,
+        ],
+    )
+    .await?;
     dotns::ensure_domain(&asset_hub, env, &owner, &domain, args.register).await?;
 
     let (content_cid, prepared) = match &args.input_car {

@@ -58,6 +58,7 @@ async fn submit(env: &Env, signer: &Keypair, name: &str, publish: bool) -> Resul
     let label = publisher_label(&full, &env.tld)?;
     let publisher = parse_h160(&env.publisher)?;
     let client = asset_hub_client(env).await?;
+    crate::dotns::ensure_deployed(&client, env, &[crate::dotns::Contract::Publisher]).await?;
 
     // Pre-check ownership for a clear message instead of the contract's bare
     // NotOwner revert (the Registry owner matches the NFT for a normal name).
