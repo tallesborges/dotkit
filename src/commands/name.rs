@@ -126,6 +126,19 @@ fn content_read_name(args: &[String]) -> Result<&String> {
     Ok(name)
 }
 
+/// Condense a contract-call error down to the protocol's own words.
+///
+/// `revive_view` reports a revert as `contract call reverted: custom error 0x…:
+/// "<message>"`. The quoted message is the part a reader can act on, so prefer
+/// it and fall back to the full chain when the revert carried no string.
+fn revert_summary(err: &anyhow::Error) -> String {
+    let text = err.to_string();
+    match (text.find('"'), text.rfind('"')) {
+        (Some(open), Some(close)) if close > open + 1 => text[open + 1..close].to_string(),
+        _ => text,
+    }
+}
+
 pub async fn run(
     env: &Env,
     cmd: Cmd,
@@ -256,10 +269,12 @@ async fn lookup(env: &Env, name: &str) -> Result<()> {
         None => (None, None),
     };
 
-    // Base list price for a fresh registrant (zero owner ⇒ no discount); best-effort.
-    let price = dotns::name_price_native(&client, env, &name, H160([0u8; 20]))
-        .await
-        .ok();
+    // Base list price for a fresh registrant (zero owner ⇒ no discount). Since
+    // the 2026-09-01 pricing rework this reverts outright for personhood-gated
+    // labels ("Short names are not for sale"), which is a fact worth showing
+    // rather than an error worth hiding: those names cannot be bought at any
+    // price, only minted through the PoP gateway.
+    let price = dotns::name_price_native(&client, env, &name, H160([0u8; 20])).await;
 
     if ui::json() {
         ui::emit(&json!({
@@ -269,7 +284,8 @@ async fn lookup(env: &Env, name: &str) -> Result<()> {
             "required_tier": tier,
             "tier_name": tier.map(dotns::tier_name),
             "status": status,
-            "price_pas": price.map(|p| p as f64 / 1e10),
+            "price_pas": price.as_ref().ok().map(|p| *p as f64 / 1e10),
+            "price_unavailable": price.as_ref().err().map(revert_summary),
             "cid": cid,
         }));
     } else {
@@ -287,8 +303,9 @@ async fn lookup(env: &Env, name: &str) -> Result<()> {
         if let Some(status) = &status {
             ui::kv("status", status);
         }
-        if let Some(price) = price {
-            ui::kv("price", format!("~{} PAS", price as f64 / 1e10));
+        match &price {
+            Ok(price) => ui::kv("price", format!("~{} PAS", *price as f64 / 1e10)),
+            Err(err) => ui::kv("price", format!("not for sale ({})", revert_summary(err))),
         }
         ui::kv("content", cid.as_deref().unwrap_or("(none)"));
     }
@@ -503,6 +520,23 @@ mod tests {
     fn content_read_rejects_a_leading_flag() {
         let args = vec!["--json".to_string()];
         assert!(content_read_name(&args).is_err());
+    }
+
+    #[test]
+    fn revert_summary_prefers_the_quoted_protocol_message() {
+        let err = anyhow::anyhow!(
+            "contract call reverted: custom error 0x2dfc7d98: \"Short names are not for sale\""
+        );
+        assert_eq!(super::revert_summary(&err), "Short names are not for sale");
+    }
+
+    #[test]
+    fn revert_summary_falls_back_to_the_whole_error() {
+        let err = anyhow::anyhow!("contract call reverted: custom error 0xdeadbeef");
+        assert_eq!(
+            super::revert_summary(&err),
+            "contract call reverted: custom error 0xdeadbeef"
+        );
     }
 
     #[test]
