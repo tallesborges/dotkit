@@ -39,9 +39,11 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | `asset-hub name text get <name> <key>` | Read a text record. |
 | `account env` / `account whoami` | Print resolved env / prove signer + chain connectivity (shows SS58 + H160). |
 | `account info` | Show the signer's Asset Hub native (PAS) balance. |
+| `account login --app-id <id> --metadata-url <https-url>` | Pair with a mobile wallet via a terminal QR and persist its account under `~/.dotkit/papp/sessions`. Read-only for DotNS/Bulletin: it does not request allowances, sign, upload, query balances, or submit a chain transaction. The pairing protocol does use the selected env's People-chain Statement Store and required attestation. |
 | `bulletin pool init [--accounts N] [--force] [--skip-authorize]` / `status` / `authorize [--transactions N] [--bytes N]` | Manage a **private per-machine** Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`; derived `//deploy/N`). `init` generates the keystore **and authorizes** its accounts on-chain via the env's `bulletin_authorizer` in one step — pass `--skip-authorize` for offline-only generation. `status` shows each account's **on-chain** auth + quota with an `N/M authorized` rollup (honors `--pool`, so `--pool shared` inspects the shared pool; an authorization whose expiry block has passed is flagged `✗ EXPIRED` and does **not** count as authorized). `authorize` re-authorizes accounts with **one direct `authorize_account` call each** (never `utility.batch_all`, which loses the Authorizer's feeless exemption): idempotent on still-valid auths, and it **re-authorizes expired ones** (a lingering-but-expired record still exists on-chain but no longer grants free storage, so stores fail "balance too low" until refreshed). `deploy`/`store` use the pool by default (override with `--pool local\|shared`). Testnet-only. |
 
 **Global flags:** `--env <id>` (default `paseo-next-v2`), `--mnemonic`, `--derivation-path //x`, `--pool <local|shared>` (Bulletin upload pool; default: private `~/.dotkit` pool if a keystore exists, else shared), `-q/--quiet`, `--json` (one machine-readable JSON object per command; errors become `{"error": …}` on stderr).
+`account login` requires an explicit product identity (`--app-id`) and HTTPS metadata URL (`--metadata-url`); it rejects `--json`, `--quiet`, `--mnemonic`, `--derivation-path`, and `--pool` because a QR must render in the terminal and those signer/pool inputs are not part of pairing.
 **`deploy` flags:** `--register`, `--publish`, `--fail-on-publish-error`, `--config <deploy.toml>`, `--input-car <file>`, `--kubo`.
 
 ## Environments
@@ -72,10 +74,12 @@ publisher = "0x1875B90A61705917945f9B7C6Ff7819Ad48A198e"
 tld = "test"
 asset_hub_rpc = "ws://127.0.0.1:9944"
 bulletin_rpc  = "ws://127.0.0.1:9945"
+people_rpc = "ws://127.0.0.1:9946"
 ```
 
 - `dotkit account env` shows the resolved env plus its `source` (`builtin` / `builtin+user` / `user`); `dotkit account env --list` shows all of them.
 - Only **`tld`** is required for a new env — it feeds the namehash and cannot be guessed. Everything else may be omitted; the command that needs a missing endpoint or address says so by name.
+- `account login` uses `people_rpc` for the People-chain Statement Store. Both built-in envs provide it; custom envs may omit it until pairing is needed.
 - Unknown keys are **rejected**, so a typo like `reslover` fails loudly instead of being silently ignored.
 
 ## Signer & account model
@@ -166,6 +170,7 @@ dotkit asset-hub name subnode create app.myapp.paseo 0xabc… # or an SS58 addre
 
 dotkit surfaces the real EVM revert reason. Map it:
 
+- `no contract code at 0x… — the DotNS contracts are not deployed on this environment` → that env's DotNS suite is absent, not misconfigured. Expected on a freshly wiped chain until Parity redeploys; the addresses are CREATE3-deterministic so they come back unchanged and **no dotkit change is needed**. Use an `--env` whose suite is still deployed in the meantime. (Paseo Next v2 has been in this state since the 2026-09-01 wipe.)
 - `requires Lite/Full personhood, but the signer … has NoStatus` → the name is personhood-gated; use a verified signer (`sudo.personhood.dev/personhood-faucet`, env Next V2) or pick an open (long-base) name. dotkit bails here **before** committing.
 - `Name must have no digit suffix or exactly 2 digit suffix` → rename (0 or 2 trailing digits).
 - `custom error 0x14c417b5 …` echoing your H160 → not authorized (you don't own the node).
@@ -192,4 +197,5 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 - **`InsufficientAuthorizerBudget`** means the grant exceeds what the Authorizer has left in `AllowedAuthorizers` (its own `quota` is debited per grant), not that your account is at fault. Lower `--transactions`/`--bytes`; the defaults (`1000` / `100 MB`) are sized to fit.
 - **`--json`** makes every command print one JSON object to stdout (read commands like `name owner-of`/`lookup`, `bulletin verify`, `account info` are read-only and script-friendly); on failure it prints `{"error": …}` to stderr.
 - **Single blob > 2 MiB** is not yet supported (`bulletin store` bails; Kubo/native chunking keeps deploy blocks ≤256 KiB).
+- **`asset-hub name content <name>` takes the name and nothing else.** It is a clap `external_subcommand`, so any global flag written *after* it is swallowed instead of applied — put them first: `dotkit --env preview asset-hub name content myapp`. Trailing flags are now rejected loudly; before that they silently read the default env's namespace.
 - **`--env` carries a matched set** — the Bulletin RPC, the DotNS **TLD** and the Asset Hub contract addresses go together; select an env, don't mix them. After a chain wipe, re-verify against `paritytech/dotns-releases` before trusting a deploy.
