@@ -15,6 +15,16 @@
 //! - **Tier vs. availability**: `classifyName` returns `(tier, status)` where
 //!   `status` is a human string like "Available to all"; tier `0` is open, higher
 //!   tiers are PoP-gated (see the `dotns` skill / substrate-chain-toolkit for PoP).
+//! - **Pricing binding (2026-09-01 redeploy)**: `Registration` gained `maxPrice`
+//!   and `pricingVersion`, both sealed into the commitment preimage, so the
+//!   four-field tuple no longer matches any function on the contract —
+//!   `makeCommitment` moved from selector `0x7a23df1d` to `0x7d0450f0` and the
+//!   old one reverts with empty returndata. `maxPrice` is a slippage ceiling
+//!   (the price plus [`MAX_PRICE_SLIPPAGE_PERCENT`]); `pricingVersion` is the
+//!   cost model's content version, read from `PopRules.pricingVersion()` (which
+//!   returns the same value as `DotnsCostModelRegistry.currentVersion()` —
+//!   verified live on paseo-next-v2, 2026-09-04). The payable `register` is
+//!   charged the *price*, not the ceiling.
 
 use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_sol_types::{sol, SolCall};
@@ -27,6 +37,8 @@ sol! {
         address owner;
         bytes32 secret;
         bool reserved;
+        uint256 maxPrice;
+        uint256 pricingVersion;
     }
 
     struct SubnodeRecord {
@@ -36,15 +48,16 @@ sol! {
         address owner;
     }
 
-    struct Price {
-        uint256 base;
-        uint8 tier;
-        uint8 discountTier;
-        string status;
+    struct PriceWithMeta {
+        uint256 price;
+        uint8 status;
+        uint8 userStatus;
+        string message;
     }
 
     function classifyName(string name) external view returns (uint8, string);
-    function priceWithoutCheck(string name, address owner) external view returns (Price);
+    function priceWithoutCheck(string name, address owner) external view returns (PriceWithMeta);
+    function pricingVersion() external view returns (uint256);
 
     function makeCommitment(Registration r) external view returns (bytes32);
     function commit(bytes32 commitment) external;
@@ -76,12 +89,24 @@ fn to_h160(a: Address) -> H160 {
 }
 
 /// Build the `Registration` tuple for an open-tier name (`reserved = false`).
-pub fn registration(label: &str, owner: H160, secret: [u8; 32]) -> Registration {
+///
+/// `max_price` and `pricing_version` are part of the commitment preimage, so the
+/// exact same values must be passed to `makeCommitment` and to `register` or the
+/// reveal will not match the commitment.
+pub fn registration(
+    label: &str,
+    owner: H160,
+    secret: [u8; 32],
+    max_price: U256,
+    pricing_version: U256,
+) -> Registration {
     Registration {
         label: label.to_string(),
         owner: to_address(owner),
         secret: FixedBytes::from(secret),
         reserved: false,
+        maxPrice: max_price,
+        pricingVersion: pricing_version,
     }
 }
 
@@ -114,11 +139,22 @@ pub fn encode_price(label: &str, owner: H160) -> Vec<u8> {
 
 /// Decode `priceWithoutCheck` -> the price in 18-decimal EVM wei. The contract
 /// returns a single dynamic struct, so the return is ABI-wrapped (leading offset)
-/// and modeled here as the `Price` struct rather than flat return values.
+/// and modeled here as the `PriceWithMeta` struct rather than flat return values.
 pub fn decode_price(data: &[u8]) -> Result<U256> {
     let ret =
         priceWithoutCheckCall::abi_decode_returns(data).context("decoding priceWithoutCheck")?;
-    Ok(ret.base)
+    Ok(ret.price)
+}
+
+/// ABI-encode `pricingVersion()` — the cost model's content version, which the
+/// registrar binds into the commitment so a mid-flight cost-model change
+/// invalidates the reveal instead of silently repricing it.
+pub fn encode_pricing_version() -> Vec<u8> {
+    pricingVersionCall {}.abi_encode()
+}
+
+pub fn decode_pricing_version(data: &[u8]) -> Result<U256> {
+    pricingVersionCall::abi_decode_returns(data).context("decoding pricingVersion")
 }
 
 pub fn encode_make_commitment(r: Registration) -> Vec<u8> {
@@ -251,13 +287,26 @@ pub fn decode_personhood_status(data: &[u8]) -> Result<u8> {
 /// token is a ratio of 1e8. Shared by every wei→native conversion below.
 const WEI_PER_NATIVE_PLANCK: u64 = 100_000_000;
 
-/// Convert an 18-decimal EVM wei price into the native `Revive.call` value.
-/// Applies the +10% margin the contract charges, ceiling the wei division,
-/// then scales from 18-decimal wei to the 10-decimal native token (ratio 1e8).
+/// Slippage headroom sealed into the commitment as `maxPrice`, matching
+/// `@parity/dotns-cli`'s `MAX_PRICE_SLIPPAGE_PERCENT`. The commitment fixes a
+/// ceiling, not the amount charged, so the margin only decides how much the
+/// price may drift between commit and reveal before the reveal is rejected.
+const MAX_PRICE_SLIPPAGE_PERCENT: u64 = 10;
+
+/// The `maxPrice` ceiling to seal into a `Registration`: the quoted price plus
+/// [`MAX_PRICE_SLIPPAGE_PERCENT`], in 18-decimal EVM wei.
+pub fn max_price_wei(price_wei: U256) -> U256 {
+    price_wei + price_wei * U256::from(MAX_PRICE_SLIPPAGE_PERCENT) / U256::from(100u64)
+}
+
+/// Convert an 18-decimal EVM wei price into the native `Revive.call` value for
+/// `register`. The registrar charges the quoted price itself — the 10% margin
+/// lives in the commitment's `maxPrice` ceiling, not in the payment — so this is
+/// a plain wei→native conversion (ratio 1e8), ceiled so sub-planck dust can
+/// never underpay.
 pub fn register_value_native(price_wei: U256) -> Result<u128> {
-    let scaled = price_wei * U256::from(11u64);
-    let with_margin = (scaled + U256::from(9u64)) / U256::from(10u64);
-    let native = with_margin / U256::from(WEI_PER_NATIVE_PLANCK);
+    let ratio = U256::from(WEI_PER_NATIVE_PLANCK);
+    let native = (price_wei + ratio - U256::from(1u64)) / ratio;
     u128::try_from(native).context("register value overflows u128")
 }
 
@@ -283,9 +332,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn value_conversion_candidate() {
+    fn register_pays_the_quoted_price_not_the_ceiling() {
+        // 10 PAS quoted (1e19 wei) is charged as 1e11 plancks — the 10-decimal
+        // native equivalent — with no margin added.
         let price_wei = U256::from(10_000_000_000_000_000_000u128);
-        assert_eq!(register_value_native(price_wei).unwrap(), 110_000_000_000);
+        assert_eq!(register_value_native(price_wei).unwrap(), 100_000_000_000);
+        // Sub-planck dust ceils up rather than underpaying.
+        assert_eq!(register_value_native(U256::from(1u64)).unwrap(), 1);
+    }
+
+    #[test]
+    fn max_price_adds_ten_percent_slippage() {
+        let price_wei = U256::from(10_000_000_000_000_000_000u128);
+        assert_eq!(
+            max_price_wei(price_wei),
+            U256::from(11_000_000_000_000_000_000u128)
+        );
+        assert_eq!(max_price_wei(U256::ZERO), U256::ZERO);
     }
 
     #[test]
@@ -311,16 +374,40 @@ mod tests {
     fn selectors_match_wire_spec() {
         assert_eq!(hex::encode(classifyNameCall::SELECTOR), "3017fa33");
         assert_eq!(hex::encode(priceWithoutCheckCall::SELECTOR), "dcd62573");
-        assert_eq!(hex::encode(makeCommitmentCall::SELECTOR), "7a23df1d");
+        assert_eq!(hex::encode(pricingVersionCall::SELECTOR), "e44ce5a7");
+        // The 2026-09-01 redeploy widened `Registration` to six fields, moving
+        // both commit/reveal selectors. The old `7a23df1d` / `b26675d5` pair no
+        // longer exists on the contract and reverts with empty returndata.
+        assert_eq!(hex::encode(makeCommitmentCall::SELECTOR), "7d0450f0");
         assert_eq!(hex::encode(commitCall::SELECTOR), "f14fcbc8");
         assert_eq!(hex::encode(minCommitmentAgeCall::SELECTOR), "8d839ffe");
-        assert_eq!(hex::encode(registerCall::SELECTOR), "b26675d5");
+        assert_eq!(hex::encode(registerCall::SELECTOR), "4e47e64b");
         assert_eq!(hex::encode(ownerCall::SELECTOR), "02571be3");
         assert_eq!(hex::encode(setSubnodeOwnerCall::SELECTOR), "bef42f3c");
         assert_eq!(hex::encode(personhoodStatusCall::SELECTOR), "886af133");
         // Standard ERC721 selectors on the name-NFT Registrar.
         assert_eq!(hex::encode(ownerOfCall::SELECTOR), "6352211e");
         assert_eq!(hex::encode(transferFromCall::SELECTOR), "23b872dd");
+    }
+
+    #[test]
+    fn price_without_check_decodes_live_returndata() {
+        // Real `priceWithoutCheck("dotkitprobe", <owner>)` returndata from
+        // paseo-next-v2 (2026-09-04): struct offset, price 1e19 wei, status 0,
+        // userStatus 0, message offset, then "Available to all".
+        let data = hex::decode(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000008ac7230489e80000\
+             0000000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             0000000000000000000000000000000000000000000000000000000000000010\
+             417661696c61626c6520746f20616c6c00000000000000000000000000000000",
+        )
+        .unwrap();
+        let price = decode_price(&data).unwrap();
+        assert_eq!(price, U256::from(10_000_000_000_000_000_000u128));
+        assert_eq!(register_value_native(price).unwrap(), 100_000_000_000);
     }
 
     #[test]

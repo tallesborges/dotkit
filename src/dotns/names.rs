@@ -593,19 +593,48 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
         0,
         registrar::encode_price(&label, owner),
     )
-    .await?;
+    .await
+    .with_context(|| {
+        format!(
+            "{name} cannot be priced by the public registrar (it classifies as {}). \
+             Since the 2026-09-01 pricing rework only open-tier names are for sale there; \
+             Lite/Full names are minted through the DotNS PoP gateway \
+             (`dotnsGateway.register_name`, which needs a People-chain ring-membership proof), \
+             a path dotkit does not implement. Pick a label with a longer base (digits in a \
+             trailing 2-digit suffix don't count toward it).",
+            tier_name(required)
+        )
+    })?;
     let price_wei = registrar::decode_price(&price_data)?;
     let value_native = registrar::register_value_native(price_wei)?;
+    let max_price = registrar::max_price_wei(price_wei);
+
+    // The cost model's version is sealed into the commitment, so a cost-model
+    // change between commit and reveal invalidates the reveal rather than
+    // silently repricing it. Read it once and reuse it for both halves.
+    let pricing_version_data = revive_view(
+        &client,
+        origin,
+        pop_rules,
+        0,
+        registrar::encode_pricing_version(),
+    )
+    .await?;
+    let pricing_version = registrar::decode_pricing_version(&pricing_version_data)?;
 
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
+
+    // `maxPrice` and `pricingVersion` are part of the commitment preimage, so
+    // commit and reveal must use one identical tuple.
+    let registration = registrar::registration(&label, owner, secret, max_price, pricing_version);
 
     let commitment_data = revive_view(
         &client,
         origin,
         registrar_addr,
         0,
-        registrar::encode_make_commitment(registrar::registration(&label, owner, secret)),
+        registrar::encode_make_commitment(registration.clone()),
     )
     .await?;
     let commitment = registrar::decode_commitment(&commitment_data)?;
@@ -634,8 +663,7 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
 
     ui::step(format!("register {name}"));
     ui::kv("value", format!("{value_native} plancks"));
-    let register_calldata =
-        registrar::encode_register(registrar::registration(&label, owner, secret));
+    let register_calldata = registrar::encode_register(registration);
     // A commitment can't be valid before `min_age` seconds — wait that floor,
     // then poll the dry-run until the lagging finalized clock also agrees.
     tokio::time::sleep(Duration::from_secs(min_age)).await;
