@@ -103,6 +103,29 @@ The registrar's `classifyName` (on `POP_RULES`) gates a label by shape + base le
 - **A label must end in NO digits or EXACTLY 2 digits.** 1 or 3+ trailing digits → the contract reverts: `Name must have no digit suffix or exactly 2 digit suffix`.
 - `dotkit name register` and `deploy --register` handle **open (0)** names. **Reserved (3)** is rejected (governance-only), and since the 2026-09-01 pricing rework **Lite (1) / Full (2) are no longer purchasable at all**: `priceWithoutCheck` reverts `Short names are not for sale`, so the public RegistrarController path cannot price them and dotkit bails before committing. Personhood-gated names now come only from the PoP gateway (`dotnsGateway.register_name`, which needs a People-chain ring-membership proof) — a path dotkit does not implement. dotkit still pre-checks the owner's `personhoodStatus(owner, "dotns")` on the AH precompile (`0x…0a010000`) and bails **before committing** if the signer's tier is too low, so an unverified signer stops there first.
 - Lite/Full names need a **personhood-verified signer** (Full satisfies Lite). Get testnet personhood at `sudo.personhood.dev/personhood-faucet` (env "Next V2"); the signer must also be funded + H160-mapped on Asset Hub. Note: People-chain personhood is **not** auto-bridged — bind it to the `dotns` context via `sudo.personhood.dev/dotns-bootstrap` first.
+- **Tier is computed on the base label, excluding a trailing 2-digit suffix.** `dotpulse00` classifies exactly like `dotpulse` (Lite), so padding a short name with digits does not make it buyable. To land on tier 0, lengthen the *letters*.
+
+### Registration ABI (commit/reveal)
+
+The 2026-09-01 redeploy widened the registrar's `Registration` tuple, which moved both commit/reveal selectors:
+
+```solidity
+Registration(string label, address owner, bytes32 secret, bool reserved, uint256 maxPrice, uint256 pricingVersion)
+```
+
+| Call | Selector | Notes |
+|---|---|---|
+| `makeCommitment(Registration)` | `0x7d0450f0` | was `0x7a23df1d` for the 4-field tuple |
+| `register(Registration)` | `0x4e47e64b` | payable; was `0xb26675d5` |
+| `commit(bytes32)` | `0xf14fcbc8` | unchanged |
+| `priceWithoutCheck(string,address)` | `0xdcd62573` | unchanged selector, returns `PriceWithMeta(price,status,userStatus,message)` |
+| `pricingVersion()` | `0xe44ce5a7` | on `POP_RULES` |
+
+- Sending the **old 4-field tuple hits no function at all**: the dry-run comes back `flags: 1, data: ""` (empty revert) while `minCommitmentAge()` still answers, which reads like a dead contract but is purely a selector mismatch. That was dotkit ≤0.2.4's bug.
+- `maxPrice` is a **slippage ceiling**, price + 10% (matching `@parity/dotns-cli`'s `MAX_PRICE_SLIPPAGE_PERCENT`). `pricingVersion` is the cost model's content hash — **not** a counter — read from `POP_RULES.pricingVersion()`, which returns the same value as `DotnsCostModelRegistry.currentVersion()` (verified live 2026-09-04).
+- Both fields are part of the **commitment preimage**, so `makeCommitment` and `register` must be given one identical tuple or the reveal never matches.
+- The payable `register` is charged the **quoted price exactly** (10 PAS open tier), not the ceiling. There is no +10% payment margin — that margin moved into `maxPrice`. Paying 0 reverts `0x11011294`.
+- Commitment window is `minCommitmentAge` 6s to `maxCommitmentAge` **86400s**, so a slow reveal is never the problem.
 
 ## Deploy workflow
 
@@ -178,7 +201,10 @@ dotkit surfaces the real EVM revert reason. Map it:
 - `custom error 0x14c417b5 …` echoing your H160 → not authorized (you don't own the node).
 - `cannot publish <name>: publishing to Browse needs Lite or Full personhood …` → the Publisher gates non-owner callers; verify at `sudo.personhood.dev` (env Next V2) or publish from a verified signer.
 - `cannot publish <name>: daily publish cap reached (Lite 1/day, Full 5/day); next publish allowed in ~N min …` → wait out the rolling 24h window, or use a Full-tier signer for a higher cap.
-- `no reason returned (empty revert…)` → often an unmapped account or an address with no code; run `account whoami` / `asset-hub map`.
+- `Revive::ContractReverted` on a **submitted** write whose dry-run passed → almost always the storage-deposit limit, not the contract's own logic. `ReviveApi.call` reports `storage_deposit` (net) and `max_storage_deposit` (peak); a call that writes then refunds peaks above its net, and a limit derived from the net is exhausted mid-execution, which the pallet reports as a revert. DotNS `register` nets 1.032 PAS of deposit but peaks at 1.4448 PAS. dotkit now limits from the peak; if you hand-build a `Revive.call`, do the same.
+- `no reason returned (empty revert…)` on `register` while other reads on the same contract answer fine → a **selector mismatch**, not a dead contract. Check the `Registration` tuple against the deployed ABI (see "Registration ABI" above) and `@parity/dotns-cli`'s bundled ABI in `dist/core/index.js`.
+- `custom error 0x11011294` on `register` → insufficient payment; the call value must cover the quoted price.
+- `no reason returned (empty revert…)` elsewhere → often an unmapped account or an address with no code; run `account whoami` / `asset-hub map`.
 - `AccountUnmapped` / "balance too low" on map → fund the signer on Asset Hub (`faucet.polkadot.io/?parachain=1500`) then `asset-hub map`.
 
 ## Host / content contract
@@ -187,7 +213,8 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 
 ## Hard rules
 
-- **Open-tier registration only** (Reserved rejected; Lite/Full unbuyable since 2026-09-01 — `Short names are not for sale`). Open tier is a flat **10 PAS** on paseo-next-v2. dotkit still pre-checks `personhoodStatus` and bails early if the signer's tier is too low.
+- **Open-tier registration only** (Reserved rejected; Lite/Full unbuyable since 2026-09-01 — `Short names are not for sale`). Open tier is a flat **10 PAS** on paseo-next-v2, charged exactly (no margin). dotkit still pre-checks `personhoodStatus` and bails early if the signer's tier is too low.
+- **Signed `Revive.call` limits come from the dry-run's peak, not its net.** `max_storage_deposit` ≥ `storage_deposit`; limiting to the net makes a refunding call fail as `Revive::ContractReverted` after the dry-run passed.
 - **Name digits:** none or exactly two, else the register reverts.
 - **`<name>.paseo.li`** is the v2 gateway; `<name>.dot.li` points at the dead Summit chain — never use it for v2.
 - **Secrets** via `$MNEMONIC` / `$DOTNS_MNEMONIC`, not `--mnemonic` in shell history.
