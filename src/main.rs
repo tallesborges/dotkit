@@ -3,6 +3,7 @@ mod chain;
 mod commands;
 mod config;
 mod dotns;
+mod dotshare;
 mod env;
 mod merkle;
 mod pool;
@@ -56,6 +57,8 @@ struct Cli {
 enum Command {
     /// Deploy a static app: merkleize -> Bulletin -> bind the DotNS contenthash (MVP).
     Deploy(commands::deploy::Args),
+    /// Share one file: wrap it in the Dotshare envelope, store it on Bulletin, print the viewer link.
+    Share(commands::share::Args),
     /// Bulletin chain storage ops.
     #[command(subcommand)]
     Bulletin(commands::bulletin::Cmd),
@@ -92,6 +95,9 @@ async fn run() -> anyhow::Result<()> {
                 .or_else(|| std::env::var("MNEMONIC").ok())
                 .or_else(|| std::env::var("DOTNS_MNEMONIC").ok());
             commands::deploy::run(&env, args, mnemonic, cli.derivation_path, pool_source).await
+        }
+        Command::Share(args) => {
+            commands::share::run(&env, args, cli.mnemonic, cli.derivation_path, pool_source).await
         }
         Command::Bulletin(cmd) => {
             commands::bulletin::run(&env, cmd, cli.mnemonic, cli.derivation_path, pool_source).await

@@ -136,7 +136,7 @@ pub async fn run(
 /// Resolve the write signer: the caller's mnemonic when supplied, otherwise a
 /// random authorized account from the selected Bulletin pool (the default owner
 /// signer has no Bulletin quota — only pool accounts do).
-fn resolve_signer(
+pub fn resolve_signer(
     mnemonic: Option<String>,
     derivation_path: Option<String>,
     pool_source: pool::PoolSource,
