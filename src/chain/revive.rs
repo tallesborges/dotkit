@@ -182,6 +182,34 @@ pub async fn revive_view(
     Ok(exec.data)
 }
 
+/// Plancks a [`StorageDeposit`] charges, treating a refund as zero.
+fn charge_amount(
+    deposit: &asset_hub::runtime_types::pallet_revive::primitives::StorageDeposit<u128>,
+) -> u128 {
+    match deposit {
+        asset_hub::runtime_types::pallet_revive::primitives::StorageDeposit::Charge(v) => *v,
+        asset_hub::runtime_types::pallet_revive::primitives::StorageDeposit::Refund(_) => 0,
+    }
+}
+
+/// The storage-deposit limit to submit with a signed call, from a dry-run's net
+/// (`storage_deposit`) and peak (`max_storage_deposit`) charges.
+///
+/// It has to cover the **peak**, not the net. A call that writes and then refunds
+/// passes through a high-water mark above what it settles to — DotNS `register`
+/// deploys the label store and peaks ~40% above its net charge — and a
+/// net-derived limit is exhausted mid-execution. pallet_revive reports that as
+/// the contract reverting (`Revive::ContractReverted`), so the dry-run passes
+/// with no limit at all and only the submitted extrinsic fails. The limit is a
+/// cap, never a payment: the extrinsic is still charged only the net deposit.
+fn storage_deposit_limit(net: u128, peak: u128) -> u128 {
+    let required = net.max(peak);
+    if required == 0 {
+        return 0;
+    }
+    required + required / 5 + 1
+}
+
 /// Submit a signed `Revive.call` to `dest` with `calldata`, transferring `value`
 /// native tokens (0 for non-payable calls). Ensures the signer is mapped,
 /// dry-runs via `ReviveApi.call` to derive gas + storage-deposit limits (and to
@@ -235,12 +263,11 @@ pub async fn revive_call(
         ref_time: required.ref_time + required.ref_time / 5,
         proof_size: required.proof_size + required.proof_size / 5,
     };
-    let storage_deposit_limit = match outcome.storage_deposit {
-        asset_hub::runtime_types::pallet_revive::primitives::StorageDeposit::Charge(v) => {
-            v + v / 5 + 1
-        }
-        asset_hub::runtime_types::pallet_revive::primitives::StorageDeposit::Refund(_) => 0,
-    };
+    // Limit from the *peak* deposit, not the net one — see [`storage_deposit_limit`].
+    let storage_deposit_limit = storage_deposit_limit(
+        charge_amount(&outcome.storage_deposit),
+        charge_amount(&outcome.max_storage_deposit),
+    );
 
     let call =
         asset_hub::tx()
@@ -256,4 +283,37 @@ pub async fn revive_call(
         .await
         .context("Revive.call did not finalize successfully")?;
     Ok(events.extrinsic_hash().0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::storage_deposit_limit;
+
+    /// Real dry-run figures for the DotNS `register` reveal on paseo-next-v2
+    /// (`dotkitabiprobetwo`, 2026-09-04): it settles at 1.032 PAS of deposit but
+    /// peaks at 1.4448 PAS. The old net-derived limit (1_238_400_001) sat below
+    /// that peak, so the submitted extrinsic died as `Revive::ContractReverted`
+    /// while the unlimited dry-run passed.
+    #[test]
+    fn limit_covers_the_peak_deposit_not_just_the_net() {
+        let net = 1_032_000_000u128;
+        let peak = 1_444_800_000u128;
+        let limit = storage_deposit_limit(net, peak);
+        assert!(limit > peak, "limit {limit} must clear the peak {peak}");
+        assert_eq!(limit, 1_733_760_001);
+        // The old behaviour, kept as the thing this must never regress to.
+        assert!(net + net / 5 + 1 < peak);
+    }
+
+    #[test]
+    fn a_deposit_free_call_needs_no_limit() {
+        assert_eq!(storage_deposit_limit(0, 0), 0);
+    }
+
+    /// A net refund can still pass through a charging peak; `charge_amount` maps
+    /// the refund to zero, so the peak alone has to drive the limit.
+    #[test]
+    fn a_refunding_call_is_still_capped_by_its_peak() {
+        assert_eq!(storage_deposit_limit(0, 500), 601);
+    }
 }
