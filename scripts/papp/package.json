@@ -1,0 +1,11 @@
+{
+  "name": "dotkit-papp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@parity/product-sdk-terminal": "0.2.1",
+    "polkadot-api": "2.1.2",
+    "verifiablejs": "1.2.0"
+  }
+}
