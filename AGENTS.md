@@ -20,6 +20,13 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
 - **Pinned metadata.** `chain/config.rs` static-codegens from `artifacts/paseo_next_v2_{asset_hub,bulletin}.scale`.
   If a call breaks after a runtime upgrade (subxt reports stale metadata), regenerate
   with `just metadata` — don't hand-edit the `.scale` files.
+- **Metadata is pruned to the pallets we call** (Asset Hub: `Revive`, `System`, `Balances`,
+  `Utility` + the `ReviveApi` runtime API; Bulletin: `TransactionStorage`, `System`,
+  `Balances`, `Utility`). Asset Hub ships 94 pallets and `#[subxt::subxt]` expands every
+  one into code that gets type-checked on every build, so the subset keeps a one-file
+  edit at ~91s instead of ~190s. **Calling a new pallet means adding it to the `metadata`
+  recipe and re-running it first** — otherwise codegen never emits that pallet and the
+  call fails with a misleading `no method named ...` error.
 - **`--env` is a matched set** — it selects the RPCs, the DotNS **TLD** and the Asset Hub
   contract addresses together; never mix envs. DotNS is deployed via CREATE3, so
   `paseo-next-v2` and `preview` share one address set and differ by TLD (`paseo` vs
@@ -49,13 +56,6 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
   "fix" it by editing the transaction-extension tuples in `chain/config.rs` — measured
   2026-08-12, that tuple signs correctly on both paseo-next-v2 (17 declared extensions)
   and PreviewNet (18), because encoding is driven by the chain's metadata, not the tuple.
-- **Surface real reverts.** All `Revive.call` reverts decode returndata via
-  `chain::revive::revert_reason`; show the actual on-chain error, don't hardcode "probably X" hints.
-- **`pallet_revive` writes** need an SS58↔H160 mapping and a successful dry-run first;
-  derive weight / storage-deposit limits from the dry-run, never magic constants.
-
-## Live-write commands (don't run to "test")
-
 - **Bulletin authorization is env-specific and must never be batched.** The Authorizer
   lives in `TransactionStorage.AllowedAuthorizers` and differs per env — `//Alice` on
   paseo-next-v2, `//Eve` on PreviewNet (where `//Alice` is rejected `BadSigner`) — so it
@@ -67,6 +67,13 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
   debited from the Authorizer's own budget — oversized ones fail
   `InsufficientAuthorizerBudget`, so defaults stay at 1000 txs / 100 MB, matching
   `paritytech/bulletin-deploy`.
+- **Surface real reverts.** All `Revive.call` reverts decode returndata via
+  `chain::revive::revert_reason`; show the actual on-chain error, don't hardcode "probably X" hints.
+- **`pallet_revive` writes** need an SS58↔H160 mapping and a successful dry-run first;
+  derive weight / storage-deposit limits from the dry-run, never magic constants.
+
+## Live-write commands (don't run to "test")
+
 The signed `just` recipes (`deploy`, `register`, `set`, `store`) and their `dotkit`
 subcommands submit **real transactions to paseo-next-v2** — they register actual `.paseo`
 names, spend testnet funds, and write to Bulletin. Don't run them just to check the build;

@@ -90,9 +90,22 @@ store file:
 # ── Maintenance ──────────────────────────────────────────────────────────────
 
 # Regenerate pinned chain metadata (run after a runtime upgrade breaks calls)
+#
+# Only the pallets this crate actually calls are kept. Asset Hub ships 94
+# pallets and Bulletin 46; `#[subxt::subxt]` expands every one of them into
+# generated Rust that then has to be type-checked on each build. Keeping just
+# the used subset cut a one-file edit from 190s to 91s.
+#
+# Adding a call to a new pallet means adding it here and re-running this
+# recipe first, otherwise codegen won't emit it and the call fails to compile
+# with a misleading "no method named ..." error.
 metadata:
-    subxt metadata --url wss://paseo-asset-hub-next-rpc.polkadot.io -f bytes > artifacts/paseo_next_v2_asset_hub.scale
-    subxt metadata --url wss://paseo-bulletin-next-rpc.polkadot.io  -f bytes > artifacts/paseo_next_v2_bulletin.scale
+    subxt metadata --url wss://paseo-asset-hub-next-rpc.polkadot.io \
+        --pallets Revive,System,Balances,Utility --runtime-apis ReviveApi \
+        -f bytes > artifacts/paseo_next_v2_asset_hub.scale
+    subxt metadata --url wss://paseo-bulletin-next-rpc.polkadot.io \
+        --pallets TransactionStorage,System,Balances,Utility \
+        -f bytes > artifacts/paseo_next_v2_bulletin.scale
 
 # Remove build artifacts
 clean:
