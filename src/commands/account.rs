@@ -1,7 +1,6 @@
 use crate::bulletin;
 use crate::chain;
 use crate::env::{self, Env};
-use crate::papp;
 use crate::ui;
 use anyhow::Result;
 use clap::Subcommand;
@@ -19,15 +18,6 @@ pub enum Cmd {
     Whoami,
     /// Show the signer's Asset Hub native (PAS) balance.
     Info,
-    /// Pair with a wallet and persist its account. This does not write to DotNS or Bulletin.
-    Login {
-        /// DotNS-style product identifier shown to the wallet.
-        #[arg(long)]
-        app_id: String,
-        /// HTTPS URL for the product metadata shown to the wallet.
-        #[arg(long)]
-        metadata_url: String,
-    },
 }
 
 pub async fn run(
@@ -50,7 +40,6 @@ pub async fn run(
                             "source": e.source.as_str(),
                             "asset_hub": e.asset_hub_rpc,
                             "bulletin": e.bulletin_rpc,
-                            "people": e.people_rpc,
                         })
                     })
                     .collect();
@@ -80,7 +69,6 @@ pub async fn run(
                     "source": env.source.as_str(),
                     "bulletin": env.bulletin_rpc,
                     "asset_hub": env.asset_hub_rpc,
-                    "people": env.people_rpc,
                     "gateway": env.ipfs_gateway,
                     "tld": env.tld,
                     "resolver": env.dotns_content_resolver,
@@ -90,7 +78,6 @@ pub async fn run(
                 ui::kv("source", env.source.as_str());
                 ui::kv("bulletin", &env.bulletin_rpc);
                 ui::kv("asset_hub", &env.asset_hub_rpc);
-                ui::kv("people", &env.people_rpc);
                 ui::kv("gateway", &env.ipfs_gateway);
                 ui::kv("tld", format!(".{}", env.tld));
                 ui::kv("resolver", &env.dotns_content_resolver);
@@ -155,17 +142,6 @@ pub async fn run(
                     ui::kv("reserved", format!("{} PAS", reserved as f64 / 1e10));
                 }
             }
-        }
-        Cmd::Login {
-            app_id,
-            metadata_url,
-        } => {
-            if ui::json() {
-                anyhow::bail!(
-                    "`account login` cannot use --json because it renders a QR code in the terminal"
-                );
-            }
-            papp::login(&app_id, &metadata_url, env.people_rpc()?)?;
         }
     }
     Ok(())

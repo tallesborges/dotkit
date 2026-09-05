@@ -28,7 +28,6 @@
 name = "Paseo Next v2"
 bulletin_rpc = "wss://paseo-bulletin-next-rpc.polkadot.io"
 asset_hub_rpc = "wss://paseo-asset-hub-next-rpc.polkadot.io"
-people_rpc = "wss://paseo-people-next-system-rpc.polkadot.io"
 ipfs_gateway = "https://paseo-bulletin-next-ipfs.polkadot.io"
 tld = "paseo"
 web_gateway = "paseo.li"
@@ -38,8 +37,8 @@ registrar = "0x4f06E818Ba3d987704fd91cf3d868E4b019106Ab"
 registry = "0xf34054fd76BbF85f216cf9908226D5f0A72E50CA"
 pop_rules = "0x747B456bE03aec0b42bd85C51513730FBD45DA31"
 publisher = "0x1875B90A61705917945f9B7C6Ff7819Ad48A198e"
-bulletin_authorizer = "//Alice"
 
+bulletin_authorizer = "//Alice"
 # PreviewNet was re-genesised and its DotNS base node is now `.test` (verified
 # live 2026-08-20: registering a label through the RegistrarController mints under
 # the `.test` namehash, and the `.dot` namehash reads back unregistered).
@@ -48,7 +47,6 @@ bulletin_authorizer = "//Alice"
 name = "PreviewNet"
 bulletin_rpc = "wss://previewnet.substrate.dev/bulletin"
 asset_hub_rpc = "wss://previewnet.substrate.dev/asset-hub"
-people_rpc = "wss://previewnet.substrate.dev/people"
 ipfs_gateway = "https://previewnet.substrate.dev/ipfs"
 tld = "test"
 web_gateway = "testnet.li"

@@ -36,7 +36,6 @@ struct EnvEntry {
     name: Option<String>,
     bulletin_rpc: Option<String>,
     asset_hub_rpc: Option<String>,
-    people_rpc: Option<String>,
     ipfs_gateway: Option<String>,
     tld: Option<String>,
     web_gateway: Option<String>,
@@ -63,7 +62,6 @@ impl EnvEntry {
             name,
             bulletin_rpc,
             asset_hub_rpc,
-            people_rpc,
             ipfs_gateway,
             tld,
             web_gateway,
@@ -111,7 +109,6 @@ pub struct Env {
     pub name: String,
     pub bulletin_rpc: String,
     pub asset_hub_rpc: String,
-    pub people_rpc: String,
     pub ipfs_gateway: String,
     /// DotNS top-level domain, without the leading dot. Paseo v2 serves `.paseo`;
     /// PreviewNet is still `.dot` until its next wipe. Every name normalization,
@@ -226,7 +223,6 @@ impl Env {
             name: entry.name.unwrap_or_else(|| id.to_string()),
             bulletin_rpc: entry.bulletin_rpc.unwrap_or_default(),
             asset_hub_rpc: entry.asset_hub_rpc.unwrap_or_default(),
-            people_rpc: entry.people_rpc.unwrap_or_default(),
             ipfs_gateway: entry.ipfs_gateway.unwrap_or_default(),
             tld,
             web_gateway: entry.web_gateway.unwrap_or_default(),
@@ -249,11 +245,6 @@ impl Env {
     /// The Bulletin RPC, or a clear error naming the env when it isn't configured.
     pub fn bulletin_rpc(&self) -> Result<&str> {
         self.endpoint(&self.bulletin_rpc, "bulletin_rpc")
-    }
-
-    /// The People chain RPC, or a clear error naming the env when it isn't configured.
-    pub fn people_rpc(&self) -> Result<&str> {
-        self.endpoint(&self.people_rpc, "people_rpc")
     }
 
     fn endpoint<'a>(&self, value: &'a str, field: &str) -> Result<&'a str> {
@@ -299,10 +290,6 @@ mod tests {
             "0x7F74D7CD50f5a834270E2ad395a01b01891AB37d"
         );
         assert_eq!(env.registry, "0xf34054fd76BbF85f216cf9908226D5f0A72E50CA");
-        assert_eq!(
-            env.people_rpc().unwrap(),
-            "wss://paseo-people-next-system-rpc.polkadot.io"
-        );
     }
 
     /// The Bulletin Authorizer differs per env — paseo-next-v2 lists `//Alice`,
@@ -376,10 +363,6 @@ mod tests {
         // Unset endpoints error in context instead of silently connecting nowhere.
         assert!(env.bulletin_rpc().is_err());
         assert!(env.asset_hub_rpc().is_ok());
-        let err = env.people_rpc().unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("env 'mynet' has no `people_rpc` configured"));
     }
 
     #[test]

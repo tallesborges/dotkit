@@ -6,7 +6,6 @@ mod dotns;
 mod dotshare;
 mod env;
 mod merkle;
-mod papp;
 mod pool;
 mod publisher;
 mod ui;
@@ -84,18 +83,6 @@ async fn run() -> anyhow::Result<()> {
     ui::set_quiet(cli.quiet);
     ui::set_json(cli.json);
     let env = env::Env::resolve(&cli.env)?;
-    if matches!(
-        &cli.command,
-        Command::Account(commands::account::Cmd::Login { .. })
-    ) && (cli.mnemonic.is_some()
-        || cli.derivation_path.is_some()
-        || cli.pool.is_some()
-        || cli.quiet)
-    {
-        anyhow::bail!(
-            "`account login` does not use --mnemonic, --derivation-path, --pool, or --quiet; remove those flags"
-        );
-    }
     let pool_source = match cli.pool {
         None => pool::PoolSource::Auto,
         Some(PoolArg::Local) => pool::PoolSource::Local,
@@ -123,15 +110,11 @@ async fn run() -> anyhow::Result<()> {
             commands::asset_hub::run(&env, cmd, mnemonic, cli.derivation_path).await
         }
         Command::Account(cmd) => {
-            if matches!(&cmd, commands::account::Cmd::Login { .. }) {
-                commands::account::run(&env, cmd, None, None).await
-            } else {
-                let mnemonic = cli
-                    .mnemonic
-                    .or_else(|| std::env::var("MNEMONIC").ok())
-                    .or_else(|| std::env::var("DOTNS_MNEMONIC").ok());
-                commands::account::run(&env, cmd, mnemonic, cli.derivation_path).await
-            }
+            let mnemonic = cli
+                .mnemonic
+                .or_else(|| std::env::var("MNEMONIC").ok())
+                .or_else(|| std::env::var("DOTNS_MNEMONIC").ok());
+            commands::account::run(&env, cmd, mnemonic, cli.derivation_path).await
         }
     }
 }
