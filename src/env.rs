@@ -314,7 +314,22 @@ mod tests {
             .patch(overlay["preview"].clone());
         let env = Env::from_entry("preview", base["preview"].clone(), EnvSource::Patched).unwrap();
         assert_eq!(env.bulletin_authorizer, "//Dave");
-        assert_eq!(env.tld, "test");
+        assert_eq!(env.tld, "testnet");
+    }
+
+    /// A stale TLD is the one config error that fails *silently*: a wrong base
+    /// node still namehashes, so reads report "available" and writes land under a
+    /// namespace nothing resolves from. PreviewNet re-rooted from `.test` to
+    /// `.testnet` around 2026-09-01 (verified live 2026-09-10 via
+    /// `DotnsProtocolRegistry.tld()`), so pin every built-in TLD against the
+    /// chain value rather than letting it drift unnoticed.
+    #[test]
+    fn builtin_envs_pin_their_dotns_tld() {
+        let entry = parse(BUILTIN, "builtin").unwrap();
+        for (id, expected) in [("paseo-next-v2", "paseo"), ("preview", "testnet")] {
+            let env = Env::from_entry(id, entry[id].clone(), EnvSource::Builtin).unwrap();
+            assert_eq!(env.tld, expected, "tld for {id}");
+        }
     }
 
     #[test]
