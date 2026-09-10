@@ -1,6 +1,6 @@
 ---
 name: dotkit
-description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — sharing a file through Dotshare, deploying a static build dir to a DotNS domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier DotNS name, looking up who owns a name or whether it's available, transferring a name you own, creating a subnode/subdomain under a name you own, resolving or setting a name's contenthash/text records, deploying App + Worker executables to app./worker. subdomains (CAR-as-chunked-file packaging, executable text records), publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: share a file with dotkit, get a dotshare link from the terminal, dotkit share file.pdf, deploy my app to a .paseo or .dot name with dotkit, dotkit deploy ./dist myapp.paseo, register a .paseo name, who owns this name, transfer a name to someone, create a subdomain with dotkit, dotkit subnode create app.myapp.paseo, bind a CID to a name, publish my app to Browse, what TLD does this env use, dotkit deploy --publish, deploy an app and worker executable with dotkit, publish a worker to worker.myapp.paseo, why does my executable CID not serve index.js, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
+description: "Use when working with the dotkit CLI, a single-binary Rust tool for Bulletin storage and DotNS naming on Paseo Asset Hub (pallet_revive). Covers deploying a static build dir to a DotNS name (merkleize, Bulletin upload, bind contenthash); publishing App and Worker executables to app./worker. subdomains; registering, looking up or transferring names and subnodes; contenthash and text records; Dotshare file links; Bulletin quota and authorization; per-env TLDs; and diagnosing register/bind reverts. Trigger phrases: deploy my app with dotkit, dotkit deploy ./dist myapp.paseo, register a .paseo name, who owns this name, deploy an app and worker executable, share a file with dotkit, why did dotkit register revert, what TLD does this env use, authorize an account for Bulletin."
 ---
 
 # dotkit
@@ -91,19 +91,39 @@ people_rpc = "ws://127.0.0.1:9946"
 
 ## DotNS naming rules & PoP tiers (verified on-chain)
 
-The registrar's `classifyName` (on `POP_RULES`) gates a label by shape + base length:
+**Label rules differ per DotNS generation, and dotkit reads them from the chain** (`classifyName` + `priceWithoutCheck` on `POP_RULES`) instead of replicating them, so it follows a redeploy with no client change. When a shape matters, measure it — `dotkit --env <id> asset-hub name lookup <label>` — rather than reasoning from either rule set below.
+
+### `.paseo` (paseo-next-v2) — DotNS v0.6.0
+
+Verified live 2026-09-10. Labels are measured **as written** and the old digit rules are **gone**: there is no digit-suffix constraint (`dotkitprobe7` and `dotkitprobe1234` both classify open), and digits count toward base length (`myapp-pr07` measures 10, not 8).
 
 | Label shape | Tier | classifyName status |
 |---|---|---|
-| Long base (e.g. `mycoolsite`, `dotshare-preview00`) | 0 | "Available to all" (open) |
-| Shorter base + **exactly 2** trailing digits (`hostdiag91`) | 1 | "Requires Lite personhood verification" |
-| Short base, no digits (`hostdiag`) | 2 | "Requires Full personhood verification" |
-| Very short (`ab`) | 3 | Reserved |
+| 9+ chars (`chatspaapp`, `myapp-pr07`) | 0 | "Available to all" (open) · ~10 PAS |
+| 6–8 chars (`chat-spa`, `mypr07`) | 1 / 2 | Lite/Full — **not for sale** on the public registrar |
+| Very short (`ab`) | 3 | Reserved (governance) |
 
-- **A label must end in NO digits or EXACTLY 2 digits.** 1 or 3+ trailing digits → the contract reverts: `Name must have no digit suffix or exactly 2 digit suffix`.
-- `dotkit name register` and `deploy --register` handle **open (0)** names. **Reserved (3)** is rejected (governance-only), and since the 2026-09-01 pricing rework **Lite (1) / Full (2) are no longer purchasable at all**: `priceWithoutCheck` reverts `Short names are not for sale`, so the public RegistrarController path cannot price them and dotkit bails before committing. Personhood-gated names now come only from the PoP gateway (`dotnsGateway.register_name`, which needs a People-chain ring-membership proof) — a path dotkit does not implement. dotkit still pre-checks the owner's `personhoodStatus(owner, "dotns")` on the AH precompile (`0x…0a010000`) and bails **before committing** if the signer's tier is too low, so an unverified signer stops there first.
-- Lite/Full names need a **personhood-verified signer** (Full satisfies Lite). Get testnet personhood at `sudo.personhood.dev/personhood-faucet` (env "Next V2"); the signer must also be funded + H160-mapped on Asset Hub. Note: People-chain personhood is **not** auto-bridged — bind it to the `dotns` context via `sudo.personhood.dev/dotns-bootstrap` first.
-- **Tier is computed on the base label, excluding a trailing 2-digit suffix.** `dotpulse00` classifies exactly like `dotpulse` (Lite), so padding a short name with digits does not make it buyable. To land on tier 0, lengthen the *letters*.
+The 6–8 char band is closed by `PopRules.shortNamesEnabled = false`: `priceWithoutCheck` reverts `Short names are not for sale`, so the public `RegistrarController` cannot price it at **any** personhood tier. **Verification alone does not open it** — upstream's preflight gets this wrong and tells users to verify (their issue #1415); dotkit reports both the required tier and the not-for-sale fact.
+
+### `preview` (PreviewNet) — still the older profile
+
+The pre-v0.6.0 rules remain in force there:
+
+- A label must end in **no digits or exactly 2**, else `classifyName` reverts `Name must have no digit suffix or exactly 2 digit suffix` (`0x2dfc7d98`).
+- Tier is computed on the base label **excluding** a trailing 2-digit suffix, so `dotpulse00` classifies like `dotpulse` — padding a short name with digits does not make it buyable.
+
+A label shape that registers on `.paseo` today may still be refused on `preview`.
+
+### Public registrar vs PoP gateway
+
+Two ways to mint a name; **dotkit implements only the first**.
+
+- **Public `RegistrarController`** (commit/reveal, what dotkit does): handles **open-tier** names. **Reserved (3)** is rejected as governance-only.
+- **PoP gateway** (`dotnsGateway.register_name`): mints Lite/Full and short names against a People-chain ring-membership proof, bypassing the registrar controller entirely. dotkit does **not** implement it, and whether it accepts a given short label has not been tested here.
+
+So "not for sale" in dotkit's output means *not purchasable through the public registrar* — it is not proof the name is unobtainable by any route.
+
+dotkit still pre-checks the owner's `personhoodStatus(owner, "dotns")` on the AH precompile (`0x…0a010000`) and bails **before committing** when the signer's tier is too low, so an unverified signer stops there first. Get testnet personhood at `sudo.personhood.dev/personhood-faucet` (env "Next V2"); the signer must also be funded + H160-mapped on Asset Hub. People-chain personhood is **not** auto-bridged — bind it to the `dotns` context via `sudo.personhood.dev/dotns-bootstrap` first.
 
 ### Registration ABI (commit/reveal)
 
@@ -245,9 +265,9 @@ dotkit asset-hub name subnode create app.myapp.paseo 0xabc… # or an SS58 addre
 dotkit surfaces the real EVM revert reason. Map it:
 
 - `no DotNS contracts are deployed on <env>; awaiting the post-wipe redeployment` (or `N of 6 DotNS contracts are not deployed on <env>`) → that env's DotNS suite is absent, not misconfigured. dotkit probes code-at-address **before** any ABI decoding, lists every missing contract by name and address, and refuses signed calls before spending fees. The addresses are CREATE3-deterministic so they come back unchanged and **no dotkit change is needed** — run `dotkit --env <id> asset-hub status` to watch for the redeploy. (Paseo Next v2's DotNS suite was redeployed 2026-09-01 ~16:15 UTC to the same CREATE3 addresses and is live again; the Browse **publisher** remains absent on *both* built-in envs, at both its v2 and current v3 addresses, so `--publish` is still broken everywhere.)
-- `not for sale (Short names are not for sale)` in `name lookup`, or that revert from `register` → the label is Lite/Full tier and cannot be bought through the public registrar at any price. Pick an open (long-base, no-digit-suffix) label, or obtain it through the PoP gateway. Not a dotkit or funding problem.
-- `requires Lite/Full personhood, but the signer … has NoStatus` → the name is personhood-gated; use a verified signer (`sudo.personhood.dev/personhood-faucet`, env Next V2) or pick an open (long-base) name. dotkit bails here **before** committing.
-- `Name must have no digit suffix or exactly 2 digit suffix` → rename (0 or 2 trailing digits).
+- `not for sale (Short names are not for sale)` in `name lookup`, or that revert from `register` → the label falls in the closed short band (6–8 chars on `.paseo`) and cannot be bought through the public registrar **at any personhood tier**; verifying does not help. Lengthen the label to 9+ chars, or obtain it through the PoP gateway (not implemented by dotkit). Not a dotkit or funding problem.
+- `requires Lite/Full personhood, but the signer … has NoStatus` → the name is personhood-gated; use a verified signer (`sudo.personhood.dev/personhood-faucet`, env Next V2) or pick an open (9+ char) name. dotkit bails here **before** committing.
+- `Name must have no digit suffix or exactly 2 digit suffix` → **older-profile envs only** (`preview`): rename to 0 or 2 trailing digits. DotNS v0.6.0 dropped this rule, so it no longer fires on `.paseo`.
 - `custom error 0x14c417b5 …` echoing your H160 → not authorized (you don't own the node).
 - `cannot publish <name>: publishing to Browse needs Lite or Full personhood …` → the Publisher gates non-owner callers; verify at `sudo.personhood.dev` (env Next V2) or publish from a verified signer.
 - `cannot publish <name>: daily publish cap reached (Lite 1/day, Full 5/day); next publish allowed in ~N min …` → wait out the rolling 24h window, or use a Full-tier signer for a higher cap.
@@ -263,9 +283,9 @@ Deployed root must be **CIDv1 / dag-pb (or raw single-file) / sha2-256** with `i
 
 ## Hard rules
 
-- **Open-tier registration only** (Reserved rejected; Lite/Full unbuyable since 2026-09-01 — `Short names are not for sale`). Open tier is a flat **10 PAS** on paseo-next-v2, charged exactly (no margin). dotkit still pre-checks `personhoodStatus` and bails early if the signer's tier is too low.
+- **Open-tier registration only** through the public registrar (Reserved rejected; the short band is unbuyable there at any tier — `Short names are not for sale`). Open tier is a flat **10 PAS** on paseo-next-v2, charged exactly (no margin). dotkit still pre-checks `personhoodStatus` and bails early if the signer's tier is too low. Short/Lite/Full names exist only via the PoP gateway, which dotkit does not implement.
 - **Signed `Revive.call` limits come from the dry-run's peak, not its net.** `max_storage_deposit` ≥ `storage_deposit`; limiting to the net makes a refunding call fail as `Revive::ContractReverted` after the dry-run passed.
-- **Name digits:** none or exactly two, else the register reverts.
+- **Label rules are per-generation — never hardcode them.** `.paseo` (v0.6.0) measures labels as written with no digit-suffix rule; `preview` still enforces 0-or-2 trailing digits and strips a 2-digit suffix before measuring. dotkit reads both from chain, so ask the chain instead of assuming.
 - **`<name>.paseo.li`** is the v2 gateway; `<name>.dot.li` points at the dead Summit chain — never use it for v2.
 - **Secrets** via `$MNEMONIC` / `$DOTNS_MNEMONIC`, not `--mnemonic` in shell history.
 - **`preview` env** shares Paseo v2's CREATE3 contract set but uses the **`.testnet`** TLD since PreviewNet re-rooted its registry (`.test` → `.testnet`, around 2026-09-01). Never pass a `.paseo` name to `--env preview` (or vice versa) — the TLD is part of the namehash, so it silently targets a different node: a register succeeds under the other TLD and the ownership read comes back zero. Pass bare labels and this can't happen.
