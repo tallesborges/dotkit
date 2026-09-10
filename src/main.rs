@@ -1,4 +1,5 @@
 mod bulletin;
+mod car;
 mod chain;
 mod commands;
 mod config;

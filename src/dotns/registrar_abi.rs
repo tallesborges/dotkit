@@ -66,6 +66,9 @@ sol! {
 
     function owner(bytes32 node) external view returns (address);
 
+    function resolver(bytes32 node) external view returns (address);
+    function setResolver(bytes32 node, address resolver) external;
+
     function setSubnodeOwner(SubnodeRecord record) external returns (bytes32 subnode);
 
     function ownerOf(uint256 tokenId) external view returns (address);
@@ -199,8 +202,38 @@ pub fn decode_owner(data: &[u8]) -> Result<H160> {
     Ok(to_h160(ret))
 }
 
-/// Build the `SubnodeRecord` tuple for `setSubnodeOwner`. `parent_node` is the
-/// namehash of the full parent name (with TLD); `parent_label` is that name with
+/// ABI-encode `resolver(bytes32 node)` on the DotNS Registry.
+///
+/// The Registry's resolver pointer is what *consumers* follow: they ask the
+/// Registry which resolver serves a node, then read `contenthash` / `text` from
+/// it. Writing records straight to the content resolver (as the deploy path
+/// does) does **not** set this pointer, so a freshly created subnode resolves to
+/// nothing until `setResolver` runs — the records are there but nobody can find
+/// them. A registered base name already has it set by the registrar; subnodes
+/// minted with `setSubnodeOwner` do not.
+pub fn encode_resolver(node: [u8; 32]) -> Vec<u8> {
+    resolverCall {
+        node: FixedBytes::from(node),
+    }
+    .abi_encode()
+}
+
+/// Decode `resolver` -> the node's resolver contract (zero address if unset).
+pub fn decode_resolver(data: &[u8]) -> Result<H160> {
+    let ret = resolverCall::abi_decode_returns(data).context("decoding Registry.resolver")?;
+    Ok(to_h160(ret))
+}
+
+/// ABI-encode `setResolver(bytes32 node, address resolver)` on the Registry.
+pub fn encode_set_resolver(node: [u8; 32], resolver: H160) -> Vec<u8> {
+    setResolverCall {
+        node: FixedBytes::from(node),
+        resolver: to_address(resolver),
+    }
+    .abi_encode()
+}
+
+/// Build the `SubnodeRecord` tuple for `setSubnodeOwner`. `parent_node` is the/// namehash of the full parent name (with TLD); `parent_label` is that name with
 /// the TLD stripped (e.g. `myapp` or `child.myapp`), and its namehash must match
 /// `parent_node` or the contract reverts `ParentLabelMismatch`. `sub_label` is a
 /// single canonical label (no dots).
@@ -384,6 +417,11 @@ mod tests {
         assert_eq!(hex::encode(registerCall::SELECTOR), "4e47e64b");
         assert_eq!(hex::encode(ownerCall::SELECTOR), "02571be3");
         assert_eq!(hex::encode(setSubnodeOwnerCall::SELECTOR), "bef42f3c");
+        // Standard ENS resolver-pointer selectors on the Registry. Both verified
+        // live on paseo-next-v2 (2026-09-10): `resolver(namehash("app.jollity.paseo"))`
+        // returns the env's DotnsContentResolver.
+        assert_eq!(hex::encode(resolverCall::SELECTOR), "0178b8bf");
+        assert_eq!(hex::encode(setResolverCall::SELECTOR), "1896f70a");
         assert_eq!(hex::encode(personhoodStatusCall::SELECTOR), "886af133");
         // Standard ERC721 selectors on the name-NFT Registrar.
         assert_eq!(hex::encode(ownerOfCall::SELECTOR), "6352211e");
@@ -420,5 +458,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decode_personhood_status(&data).unwrap(), 2);
+    }
+
+    /// Real `Registry.resolver(bytes32)` returndata from paseo-next-v2 for
+    /// `app.jollity.paseo` (2026-09-10): the env's DotnsContentResolver.
+    #[test]
+    fn resolver_decodes_live_returndata() {
+        let data = hex::decode("0000000000000000000000007f74d7cd50f5a834270e2ad395a01b01891ab37d")
+            .unwrap();
+        let resolver = decode_resolver(&data).unwrap();
+        assert_eq!(
+            format!("0x{}", hex::encode(resolver.0)),
+            "0x7f74d7cd50f5a834270e2ad395a01b01891ab37d"
+        );
+    }
+
+    /// An unset resolver pointer reads back as the zero address, which is the
+    /// signal a subnode still needs `setResolver`.
+    #[test]
+    fn unset_resolver_is_the_zero_address() {
+        let data = hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+            .unwrap();
+        assert_eq!(decode_resolver(&data).unwrap().0, [0u8; 20]);
     }
 }

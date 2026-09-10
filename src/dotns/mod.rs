@@ -10,7 +10,8 @@ pub mod resolver;
 
 pub use deployment::{ensure_deployed, probe, Contract, State};
 pub use names::{
-    classify_name, create_subnode, ensure_domain, name_owner, name_price_native, register_name,
-    resolve_contenthash, resolve_text, set_contenthash, set_text, tier_name, transfer_name,
+    classify_name, create_subnode, ensure_domain, ensure_subnode_with_resolver, name_owner,
+    name_price_native, register_name, resolve_contenthash, resolve_text, set_contenthash,
+    set_executable_records, set_text, tier_name, transfer_name,
 };
 pub use resolver::{contenthash_to_cid, normalize_name, strip_tld};

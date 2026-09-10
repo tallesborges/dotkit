@@ -1,6 +1,6 @@
 ---
 name: dotkit
-description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — sharing a file through Dotshare, deploying a static build dir to a DotNS domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier DotNS name, looking up who owns a name or whether it's available, transferring a name you own, creating a subnode/subdomain under a name you own, resolving or setting a name's contenthash/text records, publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: share a file with dotkit, get a dotshare link from the terminal, dotkit share file.pdf, deploy my app to a .paseo or .dot name with dotkit, dotkit deploy ./dist myapp.paseo, register a .paseo name, who owns this name, transfer a name to someone, create a subdomain with dotkit, dotkit subnode create app.myapp.paseo, bind a CID to a name, publish my app to Browse, what TLD does this env use, dotkit deploy --publish, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
+description: "Use when working with the dotkit CLI (a fast single-binary Rust tool for Bulletin storage + DotNS naming on Paseo Asset Hub / pallet_revive) — sharing a file through Dotshare, deploying a static build dir to a DotNS domain (merkleize, Bulletin upload, bind contenthash), registering an open-tier DotNS name, looking up who owns a name or whether it's available, transferring a name you own, creating a subnode/subdomain under a name you own, resolving or setting a name's contenthash/text records, deploying App + Worker executables to app./worker. subdomains (CAR-as-chunked-file packaging, executable text records), publishing a deployed name to Browse via the Publisher registry, verifying a CID resolves on the gateway, checking or granting Bulletin quota, checking a PAS balance, mapping SS58 to H160, emitting machine-readable --json, or diagnosing a register/bind revert. Trigger phrases: share a file with dotkit, get a dotshare link from the terminal, dotkit share file.pdf, deploy my app to a .paseo or .dot name with dotkit, dotkit deploy ./dist myapp.paseo, register a .paseo name, who owns this name, transfer a name to someone, create a subdomain with dotkit, dotkit subnode create app.myapp.paseo, bind a CID to a name, publish my app to Browse, what TLD does this env use, dotkit deploy --publish, deploy an app and worker executable with dotkit, publish a worker to worker.myapp.paseo, why does my executable CID not serve index.js, unpublish a .dot from Browse, verify a CID resolves, authorize an account for Bulletin, why did dotkit register revert, set a manifest text record, set a product display name and icon, generate a root manifest for Browse, dotkit deploy --register, what PoP tier does this name need."
 ---
 
 # dotkit
@@ -17,7 +17,7 @@ Fast single-binary Rust CLI for the Polkadot Triangle/Trinity stack: **Bulletin*
 | Command | What it does |
 |---|---|
 | `share <file> [--name <name>] [--mime <type>]` | Wrap one file in Dotshare's v2 envelope, store it on Bulletin, and print browser + host viewer links. Unencrypted; ≤2 MiB including the small envelope. |
-| `deploy <dir> <domain>` | Merkleize → Bulletin upload → bind the DotNS contenthash. With a `[product]` `deploy.toml` it also uploads the icon + writes the root `manifest` record. Add `--register` to auto-register an open-tier name; `--publish` to also list it in Browse. |
+| `deploy <dir> <domain>` | Merkleize → Bulletin upload → bind the DotNS contenthash. With a `[product]` `deploy.toml` it also uploads the icon + writes the root `manifest` record, and with `[[executables]]` it publishes App/Worker executables to `app.<domain>` / `worker.<domain>`. Add `--register` to auto-register an open-tier name; `--publish` to also list it in Browse. |
 | `bulletin store <file>` | Store one blob (≤2 MiB) on Bulletin. |
 | `bulletin store-car <file.car>` | Store every block of a CARv1 so its root resolves. |
 | `bulletin status [--address <ss58>]` | Bulletin authorization / quota for an account. |
@@ -150,14 +150,64 @@ executable = "worker.js"
 display_name = "TV Explorer"
 description = "10,000+ free live TV channels"
 icon = "icon.png"          # path relative to deploy.toml; PNG or JPEG
+
+[[executables]]            # optional; publishes to app.<domain>
+kind = "app"
+path = "dist/app"
+app_version = [0, 0, 1]
+runtime = "web"            # presence of `runtime` selects the v2 app manifest
+entrypoint = "index.html"
+
+[[executables]]            # optional; publishes to worker.<domain>
+kind = "worker"
+path = "dist/worker"
+app_version = [0, 0, 1]
+entrypoint = "index.js"
+includes = { chat = true, pocket = false }
 ```
 
 Each `[text]` entry is written via `setText` after the bind. The build dir is never scanned for the config (its files get uploaded).
 
-**`[product]` (generated root manifest).** When `[product]` is present, `deploy` uploads the `icon` to Bulletin (single blob, ≤2 MiB, **blake2b-256** multihash — the host's Browse/preimage icon resolver requires it; a sha2-256 icon CID resolves on the IPFS gateway but Browse renders the fallback identicon), builds the RFC root manifest `{"$v":1,"displayName","description","icon":{"cid","format"}}`, and writes it as the base name's `manifest` text record — so Browse shows a name + icon, not just a resolvable contenthash. The app's contenthash stays the SPA entry point; no `app.<name>` subname or `executable` records are created (that's for multi-surface widget/worker products). `icon.format` is inferred from the extension (`.png`→`png`, `.jpg`/`.jpeg`→`jpeg`); other extensions are rejected. `[product]` **generates** the `manifest` record, so a config that also sets a manual `[text].manifest` is rejected as a conflicting source of truth. Writing the manifest is automatic on deploy; Browse discovery still needs explicit `--publish` (personhood-gated + rate-limited).
+**`[product]` (generated root manifest).** When `[product]` is present, `deploy` uploads the `icon` to Bulletin (single blob, ≤2 MiB, **blake2b-256** multihash — the host's Browse/preimage icon resolver requires it; a sha2-256 icon CID resolves on the IPFS gateway but Browse renders the fallback identicon), builds the RFC root manifest `{"$v":1,"displayName","description","icon":{"cid","format"}}`, and writes it as the base name's `manifest` text record — so Browse shows a name + icon, not just a resolvable contenthash. The app's contenthash stays the SPA entry point; `[product]` alone creates no `app.<name>` subname or `executable` records — add `[[executables]]` for multi-surface app/worker products (see Executables below). `icon.format` is inferred from the extension (`.png`→`png`, `.jpg`/`.jpeg`→`jpeg`); other extensions are rejected. `[product]` **generates** the `manifest` record, so a config that also sets a manual `[text].manifest` is rejected as a conflicting source of truth. Writing the manifest is automatic on deploy; Browse discovery still needs explicit `--publish` (personhood-gated + rate-limited).
+
+## Executables (App + Worker)
+
+`[[executables]]` publishes multi-surface products: each entry gets its own subdomain (`app.<domain>`, `worker.<domain>`) carrying an `executable` text record plus a contenthash. The base name keeps the website contenthash and the `manifest` record, so a site and its executables coexist.
+
+**Two content models, one resolver.** They are indistinguishable by CID — both CIDv1/dag-pb/sha2-256 — but they are not the same kind of object:
+
+- **Website** (the `<dir> <domain>` argument): the bound CID *is* the UnixFS directory root, so a gateway serves `index.html` from it.
+- **Executable** (`[[executables]]`): the directory DAG is serialized to a **CARv1 archive**, and the bound CID is that archive stored **as a chunked file**. Fetching `index.js` under it fails (`no link named "index.js"`) — that is expected. The consumer is the Store, which downloads the whole archive and imports it; the archive's inner root is the real directory.
+
+```sh
+# Website + both executables in one run (needs a deploy.toml with [[executables]])
+dotkit deploy ./dist myapp.paseo
+```
+
+Per executable, `deploy` merkleizes the build dir, wraps it in a CAR, chunks the archive into raw (`0x55`, sha2-256) leaves under a dag-pb UnixFS file root, and uploads **only the chunks + that root** (the inner directory blocks ride inside the archive bytes). Chain writes then go out as **two atomic `Utility.batch_all` groups**:
+
+1. `setSubnodeOwner` + `setResolver` — so the subnode is never left owned-but-unresolvable.
+2. `setText("executable")` + `setContenthash` — so a consumer never sees content with no record describing how to run it, or vice versa.
+
+Both groups are read-back verified, and both are **skipped when the chain already holds the wanted state**, so re-running a deploy where only one executable changed writes nothing for the other.
+
+**Record shapes** (key order is part of the record):
+
+| Entry | Generated `executable` record |
+|---|---|
+| `kind = "app"` with `runtime` | `{"$v":2,"kind":"app","appVersion":[…],"runtime":{"kind":"web","entrypoint":"index.html"}}` |
+| `kind = "app"` without `runtime` | `{"$v":1,"kind":"app","appVersion":[…]}` |
+| `kind = "worker"` | `{"$v":1,"kind":"worker","appVersion":[…],"entrypoint":"index.js","includes":{…}}` |
+
+- **App v2 embeds its manifest.** When `runtime` is set, the same JSON is added to the executable's DAG as `manifest.json` **before** merkleization (it changes the CID). dotkit injects it in memory, so your `dist/` is never written to — the resulting CID is identical to having the file on disk, and an existing `manifest.json` at that path is replaced.
+- **`kind` is the subdomain label**, so two entries of the same kind are rejected.
+- `includes` is worker-only; `runtime` is app-only; workers require `entrypoint`.
+- **The subnode resolver pointer matters.** `setSubnodeOwner` mints a node with a zero resolver, and records written straight to the content resolver are unreachable until the Registry pointer is set. dotkit sets it (and repoints a wrong one) as part of publishing.
+- **Chunks are CAR-section aligned.** A chunk never splits a CAR section (`varint(len) ++ cid ++ block`), and sections are packed greedily up to 2 MiB — the invariant measured on `app.jollity.paseo`, whose 25 chunk boundaries all land on section boundaries. A section wider than the budget (only reachable via `--input-car` with a near-2 MiB block) is split at byte boundaries so the leaf still fits one extrinsic.
+- **Exact upstream boundaries are not reproducible.** Upstream emits whatever its CAR stream has buffered per flush — that same 19.9 MB archive gives 25 unevenly sized chunks including a lone 396-byte one — so two upstream deploys of identical content disagree with each other. dotkit packs deterministically (11 chunks for that archive). The archive bytes, inner root, leaf codec and node encoding are identical; only the split points differ, and the consumer reassembles the stream.
+- **The leaf/root encoding is byte-exact with chain.** Pinned by a golden vector in `src/car.rs` that reproduces `worker.jollity.paseo`'s live contenthash, including the empty-but-present dag-pb link `Name` and the fact that a single chunk still gets a file root rather than collapsing to a raw CID.
 
 ## Browse listing (Publisher)
-
 `--publish` (or the standalone `asset-hub name publish <name>`) calls `publish(<label>)` on the env's Browse **Publisher** registry so the app shows up in Browse without users searching for its name. Take it off later with `asset-hub name unpublish <name>` — no rebuild.
 
 ```sh

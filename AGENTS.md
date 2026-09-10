@@ -75,6 +75,42 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
   `chain::revive::revert_reason`; show the actual on-chain error, don't hardcode "probably X" hints.
 - **`pallet_revive` writes** need an SS58↔H160 mapping and a successful dry-run first;
   derive weight / storage-deposit limits from the dry-run, never magic constants.
+- **Websites and executables are different content models** behind one resolver, and
+  their CIDs look identical (CIDv1 / dag-pb / sha2-256). A website binds the UnixFS
+  *directory root* (`merkle.rs`). An executable binds a CARv1 archive of that directory
+  stored as a **2 MiB-chunked UnixFS file** (`car.rs`) — so fetching a path inside an
+  executable CID correctly fails with `no link named`, and only the chunks plus the
+  dag-pb file root are uploaded, never the inner directory blocks. Don't "fix" one model
+  by making it look like the other.
+- **The executable file-root encoding is pinned by a live golden vector**, not by
+  upstream source: `car.rs` tests reproduce `worker.jollity.paseo`'s on-chain contenthash
+  exactly. Two details are load-bearing and silently change the CID if touched — the
+  dag-pb link `Name` is **present but empty**, and a single chunk still gets a file root
+  instead of collapsing to its raw leaf (which is why a small executable is `bafybei…`,
+  not `bafkrei…`). Chunks are **CAR-section aligned** (never split a section; pack
+  greedily to 2 MiB) — the invariant measured on `app.jollity.paseo`, whose 25 chunk
+  boundaries all land on section boundaries. Upstream's *exact* boundaries are
+  stream-flush dependent and not reproducible even upstream-to-upstream, so don't chase
+  them; assert alignment and the budget instead. Verify a change here against the vector,
+  never by reasoning about it.
+- **A subnode needs its Registry resolver pointer set.** `setSubnodeOwner` mints a node
+  whose resolver is the zero address; records written straight to the content resolver
+  are then unreachable, because consumers ask the Registry which resolver serves a node.
+  A registered base name already has the pointer (the registrar sets it), subnodes do not.
+- **Executable writes go out as two atomic `Utility.batch_all` groups** —
+  `setSubnodeOwner` + `setResolver`, then `setText("executable")` + `setContenthash` — so
+  no consumer can observe a subnode without a resolver, or content without the record
+  describing how to run it. Use `batch_all`, never `batch`: `batch` swallows an inner
+  failure into an event instead of failing the extrinsic.
+  `ReviveApi.call` dry-runs a single *contract call*, not an extrinsic, so a batch cannot
+  be dry-run as a whole and each inner call carries its own limits. `setResolver` on a
+  subnode that doesn't exist yet reverts in a dry-run (no owner ⇒ unauthorized), so its
+  limits are measured against the **parent** node and widened by the `setSubnodeOwner`
+  measurement to cover writing a fresh storage slot; a fresh resolver slot is one address
+  word, strictly smaller than the subnode record. Limits are caps pallet_revive refunds
+  down to actual usage, so widening is free — never substitute a magic constant.
+- **Both groups are skipped when the chain already matches.** A rerun after a partial
+  failure, or with only one executable changed, writes nothing for the rest.
 
 ## Live-write commands (don't run to "test")
 

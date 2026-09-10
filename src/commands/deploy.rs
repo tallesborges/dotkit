@@ -1,4 +1,5 @@
 use crate::bulletin;
+use crate::car;
 use crate::chain;
 use crate::config::DeployConfig;
 use crate::dotns;
@@ -158,6 +159,22 @@ pub async fn run(
         ui::kv(key, ui::ellipsize(value));
     }
 
+    let mut executables = Vec::new();
+    for executable in &config.executables {
+        let published = publish_executable(
+            env,
+            &asset_hub,
+            &client,
+            &owner,
+            &pool,
+            &domain,
+            executable,
+            &config.base_dir,
+        )
+        .await?;
+        executables.push(published);
+    }
+
     let mut published = false;
     if args.publish {
         ui::step(format!("publish {domain} to Browse"));
@@ -184,6 +201,16 @@ pub async fn run(
             "icon": icon_cid.map(|c| c.to_string()),
             "manifest": icon_cid.is_some(),
             "blocks": { "stored": stored.stored, "skipped": stored.skipped },
+            "executables": executables.iter().map(|e| serde_json::json!({
+                "kind": e.kind,
+                "domain": e.domain,
+                "content": e.root.to_string(),
+                "car_bytes": e.car_len,
+                "chunks": e.chunks,
+                "record": e.record,
+                "embedded_manifest": e.embedded_manifest,
+                "unchanged": e.unchanged,
+            })).collect::<Vec<_>>(),
         }));
     } else {
         println!();
@@ -199,8 +226,147 @@ pub async fn run(
         if published {
             ui::kv("browse", "published");
         }
+        for executable in &executables {
+            ui::kv(
+                &executable.domain,
+                format!(
+                    "{} · {} ({} chunk{} of {} CAR bytes){}",
+                    executable.kind,
+                    ui::ellipsize(&executable.root.to_string()),
+                    executable.chunks,
+                    if executable.chunks == 1 { "" } else { "s" },
+                    executable.car_len,
+                    if executable.unchanged {
+                        " · unchanged"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+        }
     }
     Ok(())
+}
+
+/// A published executable, for the deploy summary.
+struct PublishedExecutable {
+    kind: &'static str,
+    domain: String,
+    root: Cid,
+    car_len: usize,
+    chunks: usize,
+    record: String,
+    embedded_manifest: bool,
+    /// `true` when the chain already held this exact executable, so nothing was
+    /// written for it.
+    unchanged: bool,
+}
+
+/// Publish one executable to `<kind>.<domain>`.
+///
+/// Executables use a different content model from the website root: the build
+/// directory's DAG is serialized to a CARv1 archive and that archive is stored
+/// **as a chunked file**, so the bound CID is the archive's file root rather
+/// than a browsable directory (see [`crate::car`]). Only the chunks and the
+/// file root reach Bulletin; the inner directory blocks ride inside the archive.
+///
+/// Chain writes go out as two atomic `Utility.batch_all` groups —
+/// `setSubnodeOwner` + `setResolver`, then `setText("executable")` +
+/// `setContenthash` — so a consumer never sees a subnode with no resolver, or a
+/// contenthash with no record describing how to run it. Both groups are skipped
+/// when the chain already holds the wanted state, which makes re-running a
+/// deploy after a partial failure (or with only one executable changed) cheap.
+#[allow(clippy::too_many_arguments)]
+async fn publish_executable(
+    env: &Env,
+    asset_hub: &subxt::OnlineClient<crate::chain::config::AssetHubConfig>,
+    bulletin: &subxt::OnlineClient<crate::chain::config::BulletinConfig>,
+    owner: &subxt_signer::sr25519::Keypair,
+    pool: &subxt_signer::sr25519::Keypair,
+    domain: &str,
+    executable: &crate::config::ExecutableConfig,
+    base_dir: &std::path::Path,
+) -> Result<PublishedExecutable> {
+    let kind = executable.label();
+    let dir = executable.dir(base_dir);
+    let dir_str = dir
+        .to_str()
+        .with_context(|| format!("[[executables]] path {} is not valid UTF-8", dir.display()))?;
+    if !dir.is_dir() {
+        bail!(
+            "[[executables]] kind = \"{kind}\" path {} is not a directory",
+            dir.display()
+        );
+    }
+
+    let record = executable.executable_json()?;
+
+    println!();
+    ui::step(format!("package {kind} from {}", dir.display()));
+    // The v2 app manifest is part of the content, so it has to be in the DAG
+    // before merkleization — injecting it in memory keeps the caller's build
+    // output untouched while producing the same CID as a file on disk.
+    let injected = if executable.embeds_manifest() {
+        ui::kv("embed", "manifest.json (App v2)");
+        vec![("manifest.json".to_string(), record.clone().into_bytes())]
+    } else {
+        Vec::new()
+    };
+    let merkleized = merkle::merkleize_dir_with(dir_str, &injected)?;
+    ui::kv("inner root", ui::ellipsize(&merkleized.root.to_string()));
+
+    let car = car::car_bytes(&merkleized.root, &merkleized.blocks).await?;
+    let packaged = car::chunked_file(&car)?;
+    ui::kv(
+        "car",
+        format!(
+            "{} bytes · {} chunk{}",
+            packaged.car_len,
+            packaged.chunks,
+            if packaged.chunks == 1 { "" } else { "s" }
+        ),
+    );
+    ui::kv("content", packaged.root);
+
+    ui::step(format!("upload {kind} to Bulletin"));
+    let stored =
+        bulletin::store_prepared_blocks(env, bulletin, packaged.root, packaged.blocks, pool)
+            .await?;
+    ui::kv(
+        "blocks",
+        format!(
+            "{} stored · {} skipped · {} total",
+            stored.stored,
+            stored.skipped,
+            stored.stored + stored.skipped
+        ),
+    );
+
+    let (subdomain, subnode) =
+        dotns::ensure_subnode_with_resolver(asset_hub, env, owner, domain, kind).await?;
+    if subnode.unchanged {
+        ui::kv("subnode", format!("{subdomain} · already owned + resolved"));
+    }
+
+    let records =
+        dotns::set_executable_records(asset_hub, env, owner, &subdomain, &record, &packaged.root)
+            .await?;
+    if records.unchanged {
+        ui::kv("records", "unchanged · nothing written");
+    } else {
+        ui::kv("executable", ui::ellipsize(&record));
+    }
+
+    Ok(PublishedExecutable {
+        kind,
+        domain: subdomain,
+        root: packaged.root,
+        car_len: packaged.car_len,
+        chunks: packaged.chunks,
+        record,
+        embedded_manifest: executable.embeds_manifest(),
+        unchanged: subnode.unchanged && records.unchanged,
+    })
 }
 
 fn require_ipfs() -> Result<()> {

@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use ipld_core::cid::{Cid as IpldCid, Version};
 use rust_unixfs::dir::builder::{BufferingTreeBuilder, TreeOptions};
 use rust_unixfs::file::adder::FileAdder;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// dag-pb IPLD codec.
@@ -28,21 +28,50 @@ pub struct Merkleized {
     pub blocks: Vec<PreparedBlock>,
 }
 
+/// A file feeding the DAG: either read from disk or supplied in memory.
+enum Source {
+    Disk(PathBuf),
+    Injected(Vec<u8>),
+}
+
 /// Merkleize a build directory into a UnixFS DAG that resolves on IPFS gateways,
 /// matching Kubo's default CIDv1 layout. Hidden files are included (like
 /// `ipfs add --hidden`); entries are added in lexicographic path order.
 pub fn merkleize_dir(dir: &str) -> Result<Merkleized> {
+    merkleize_dir_with(dir, &[])
+}
+
+/// [`merkleize_dir`], plus `injected` files supplied in memory as
+/// `(relative_path, bytes)`.
+///
+/// An injected entry at a path that also exists on disk **replaces** it, and
+/// injected files sort into the tree exactly as if they were on disk, so the
+/// resulting CID is identical to merkleizing a directory that really contained
+/// them. This is how the App v2 `manifest.json` gets into an executable's DAG
+/// without writing into the caller's build output — upstream mutates `dist/`
+/// instead. The manifest must be present *before* merkleization because it
+/// changes the root CID.
+pub fn merkleize_dir_with(dir: &str, injected: &[(String, Vec<u8>)]) -> Result<Merkleized> {
     let root_path = Path::new(dir);
     if !root_path.is_dir() {
         bail!("{dir} is not a directory");
     }
 
-    let mut files = Vec::new();
-    collect_files(root_path, root_path, &mut files)?;
+    let mut disk = Vec::new();
+    collect_files(root_path, root_path, &mut disk)?;
+
+    // A `BTreeMap` both de-duplicates injected-over-disk paths and yields the
+    // lexicographic order the DAG is built in.
+    let mut files: BTreeMap<String, Source> = disk
+        .into_iter()
+        .map(|(rel, abs)| (rel, Source::Disk(abs)))
+        .collect();
+    for (rel, data) in injected {
+        files.insert(rel.clone(), Source::Injected(data.clone()));
+    }
     if files.is_empty() {
         bail!("{dir} contains no files to deploy");
     }
-    files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Accumulate every block (file leaves/roots + directory nodes), keyed by CID
     // so shared content (e.g. many empty files) is stored once.
@@ -54,8 +83,13 @@ pub fn merkleize_dir(dir: &str) -> Result<Merkleized> {
     opts.wrap_with_directory();
     let mut tree = BufferingTreeBuilder::new(opts);
 
-    for (rel, abs) in &files {
-        let data = std::fs::read(abs).with_context(|| format!("reading {}", abs.display()))?;
+    for (rel, source) in &files {
+        let data = match source {
+            Source::Disk(abs) => {
+                std::fs::read(abs).with_context(|| format!("reading {}", abs.display()))?
+            }
+            Source::Injected(bytes) => bytes.clone(),
+        };
         let (file_cid, total_size) = add_file(&data, &mut seen, &mut raw_blocks)?;
         tree.put_link(rel, file_cid, total_size)
             .map_err(|e| anyhow!("linking {rel} into the directory tree: {e}"))?;
@@ -269,8 +303,68 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Live parity check against a real build dir: set `DOTKIT_COMPARE_DIR` to a
-    /// directory and this asserts our native root equals `ipfs add -r --hidden
+    /// An injected file must produce the same DAG as the same file on disk —
+    /// otherwise the App v2 manifest would change the CID depending on how it
+    /// got there, and the executable would bind content the Store can't match.
+    #[test]
+    fn injecting_a_file_equals_having_it_on_disk() {
+        let base = std::env::temp_dir().join(format!(
+            "dotkit-merkle-inject-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let on_disk = base.join("disk");
+        let injected = base.join("injected");
+        std::fs::create_dir_all(&on_disk).unwrap();
+        std::fs::create_dir_all(&injected).unwrap();
+
+        let manifest = br#"{"$v":2,"kind":"app"}"#;
+        for dir in [&on_disk, &injected] {
+            std::fs::write(dir.join("index.html"), b"<!doctype html>\n").unwrap();
+        }
+        std::fs::write(on_disk.join("manifest.json"), manifest).unwrap();
+
+        let want = merkleize_dir(on_disk.to_str().unwrap()).unwrap();
+        let got = merkleize_dir_with(
+            injected.to_str().unwrap(),
+            &[("manifest.json".to_string(), manifest.to_vec())],
+        )
+        .unwrap();
+
+        assert_eq!(got.root, want.root);
+        assert_eq!(got.blocks.len(), want.blocks.len());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// An injected path that already exists on disk replaces it rather than
+    /// producing a duplicate directory link.
+    #[test]
+    fn injection_overrides_a_same_path_disk_file() {
+        let base = std::env::temp_dir().join(format!(
+            "dotkit-merkle-override-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let stale = base.join("stale");
+        let fresh = base.join("fresh");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+
+        std::fs::write(stale.join("manifest.json"), b"stale").unwrap();
+        std::fs::write(fresh.join("manifest.json"), b"fresh").unwrap();
+
+        let overridden = merkleize_dir_with(
+            stale.to_str().unwrap(),
+            &[("manifest.json".to_string(), b"fresh".to_vec())],
+        )
+        .unwrap();
+        let want = merkleize_dir(fresh.to_str().unwrap()).unwrap();
+
+        assert_eq!(overridden.root, want.root);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Live parity check against a real build dir: set `DOTKIT_COMPARE_DIR` to a    /// directory and this asserts our native root equals `ipfs add -r --hidden
     /// --cid-version=1 --raw-leaves`. Ignored by default (needs `ipfs` on PATH):
     ///   DOTKIT_COMPARE_DIR=../dotshare/dist cargo test -- --ignored compare_env
     #[test]

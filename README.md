@@ -88,7 +88,8 @@ dotkit asset-hub name register myapp.paseo
 | `bulletin pool authorize [--transactions N] [--bytes N]` | Authorize all pool accounts for Bulletin storage in one `utility.batch_all` (signer defaults to `//Alice`). Idempotent — skips already-authorized. |
 
 - `--register` — register the domain first (open, or Lite/Full if the signer is verified) when it isn't already owned.
-- `--config <deploy.toml>` — write text records from a config after the bind (auto-detected as `./deploy.toml`).
+- `--config <deploy.toml>` — write text records from a config after the bind, and publish any
+  `[[executables]]` entries to `app.<domain>` / `worker.<domain>` (auto-detected as `./deploy.toml`).
 - `--input-car <file>` — deploy a pre-built CAR instead of merkleizing.
 - `--kubo` — merkleize with the external `ipfs` binary instead of the native encoder (fallback).
 
@@ -196,4 +197,4 @@ DOTKIT_COMPARE_DIR=./dist cargo test -- --ignored compare_env
 
 ## Status
 
-The `deploy` MVP is built and live-verified end-to-end on `paseo-next-v2`, including auto-register (`--register`), Lite/Full personhood-gated registration (with a pre-commit personhood check), text records via `deploy.toml`, native merkleization (golden-tested for byte-exact Kubo parity), reliable commit/reveal, and decoded on-chain revert reasons. Remaining work: a chunked path for single blobs larger than 2 MiB.
+The `deploy` MVP is built and live-verified end-to-end on `paseo-next-v2`, including auto-register (`--register`), Lite/Full personhood-gated registration (with a pre-commit personhood check), text records via `deploy.toml`, native merkleization (golden-tested for byte-exact Kubo parity), reliable commit/reveal, and decoded on-chain revert reasons. App + Worker executables ship too: a build dir is packaged as a CARv1 archive stored as a CAR-section-aligned, 2 MiB-budgeted UnixFS file and published to `app.<domain>` / `worker.<domain>` in two atomic `Utility.batch_all` groups, skipped when the chain already matches (leaf/root encoding pinned against a live on-chain record). Remaining work: a chunked path for single blobs larger than 2 MiB.

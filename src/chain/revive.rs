@@ -210,6 +210,143 @@ fn storage_deposit_limit(net: u128, peak: u128) -> u128 {
     required + required / 5 + 1
 }
 
+/// Dry-run-derived execution limits for one `Revive.call`.
+#[derive(Clone, Copy)]
+pub struct CallLimits {
+    ref_time: u64,
+    proof_size: u64,
+    storage_deposit: u128,
+}
+
+impl CallLimits {
+    /// Add another call's limits to these, for a call that cannot be dry-run on
+    /// its own because it depends on an earlier call in the same batch.
+    pub fn plus(&self, other: &CallLimits) -> CallLimits {
+        CallLimits {
+            ref_time: self.ref_time + other.ref_time,
+            proof_size: self.proof_size + other.proof_size,
+            storage_deposit: self.storage_deposit + other.storage_deposit,
+        }
+    }
+
+    fn weight(&self) -> asset_hub::runtime_types::sp_weights::weight_v2::Weight {
+        asset_hub::runtime_types::sp_weights::weight_v2::Weight {
+            ref_time: self.ref_time,
+            proof_size: self.proof_size,
+        }
+    }
+}
+
+/// One contract call inside a batch, with the limits to submit it under.
+pub struct BatchedCall {
+    pub dest: H160,
+    pub value: u128,
+    pub calldata: Vec<u8>,
+    pub limits: CallLimits,
+}
+
+/// Dry-run `calldata` against `dest` and derive the weight + storage-deposit
+/// limits to submit it under, rejecting reverts before anything is spent.
+///
+/// Split out from [`revive_call`] so a batched call can be measured separately
+/// from being submitted — [`revive_batch_all`] needs one set of limits per inner
+/// call, and `Utility.batch_all` itself cannot be dry-run through `ReviveApi.call`
+/// (that API evaluates a single contract call, not an extrinsic).
+pub async fn measure_revive_call(
+    client: &OnlineClient<AssetHubConfig>,
+    signer: &Keypair,
+    dest: H160,
+    value: u128,
+    calldata: Vec<u8>,
+) -> Result<CallLimits> {
+    bail_if_no_code(client, dest).await?;
+    let origin = account_id(signer);
+    let dry = asset_hub::runtime_apis()
+        .revive_api()
+        .call(origin, dest, value, None, None, calldata);
+    let outcome = client
+        .at_current_block()
+        .await?
+        .runtime_apis()
+        .call(dry)
+        .await
+        .context("ReviveApi.call dry-run failed")?;
+
+    let exec = match outcome.result {
+        Ok(exec) => exec,
+        Err(err) => bail!("dry-run failed on chain, refusing to submit: {err:?}"),
+    };
+    if exec.flags.bits & 1 != 0 {
+        bail!(
+            "dry-run reverted, refusing to submit: {}",
+            revert_reason(&exec.data)
+        );
+    }
+
+    let required = outcome.weight_required;
+    Ok(CallLimits {
+        ref_time: required.ref_time + required.ref_time / 5,
+        proof_size: required.proof_size + required.proof_size / 5,
+        storage_deposit: storage_deposit_limit(
+            charge_amount(&outcome.storage_deposit),
+            charge_amount(&outcome.max_storage_deposit),
+        ),
+    })
+}
+
+/// Submit several `Revive.call`s as one atomic `Utility.batch_all` extrinsic.
+///
+/// `batch_all` either applies every inner call or reverts the whole extrinsic,
+/// which is what makes a pair like `setSubnodeOwner` + `setResolver` land
+/// together — the second call depends on state the first creates, so it cannot
+/// be dry-run beforehand and must not be left unapplied if the first succeeds.
+/// An inner failure surfaces as the extrinsic failing, so the error is not
+/// swallowed the way plain `batch` would swallow it.
+///
+/// Each inner call carries its own limits (see [`measure_revive_call`]); the
+/// limits are caps that pallet_revive refunds down to actual usage, never
+/// payments.
+pub async fn revive_batch_all(
+    client: &OnlineClient<AssetHubConfig>,
+    signer: &Keypair,
+    calls: Vec<BatchedCall>,
+) -> Result<[u8; 32]> {
+    if calls.is_empty() {
+        bail!("refusing to submit an empty batch");
+    }
+    for call in &calls {
+        bail_if_no_code(client, call.dest).await?;
+    }
+    ensure_mapped(client, signer).await?;
+
+    let inner: Vec<_> = calls
+        .into_iter()
+        .map(|call| {
+            asset_hub::runtime_types::next_asset_hub_paseo_runtime::RuntimeCall::Revive(
+                asset_hub::runtime_types::pallet_revive::pallet::Call::call {
+                    dest: call.dest,
+                    value: call.value,
+                    weight_limit: call.limits.weight(),
+                    storage_deposit_limit: call.limits.storage_deposit,
+                    data: call.calldata,
+                },
+            )
+        })
+        .collect();
+
+    let batch = asset_hub::tx().utility().batch_all(inner);
+    let events = client
+        .tx()
+        .await?
+        .sign_and_submit_then_watch_default(&batch, signer)
+        .await
+        .context("submitting Utility.batch_all")?
+        .wait_for_finalized_success()
+        .await
+        .context("Utility.batch_all did not finalize successfully (the batch applied nothing)")?;
+    Ok(events.extrinsic_hash().0)
+}
+
 /// Submit a signed `Revive.call` to `dest` with `calldata`, transferring `value`
 /// native tokens (0 for non-payable calls). Ensures the signer is mapped,
 /// dry-runs via `ReviveApi.call` to derive gas + storage-deposit limits (and to

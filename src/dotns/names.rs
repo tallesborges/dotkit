@@ -9,7 +9,8 @@ use super::resolver as dotns;
 use crate::chain::asset_hub::asset_hub_client;
 use crate::chain::config::{asset_hub, AssetHubConfig};
 use crate::chain::revive::{
-    ensure_mapped, parse_h160, revert_reason, revive_address, revive_call, revive_view,
+    ensure_mapped, measure_revive_call, parse_h160, revert_reason, revive_address,
+    revive_batch_all, revive_call, revive_view, BatchedCall,
 };
 use crate::chain::signer::{account_id, build_signer};
 use crate::dotns::deployment::{ensure_deployed, Contract};
@@ -380,8 +381,251 @@ pub async fn create_subnode(
     })
 }
 
-/// Ensure `signer` owns `name` before a deploy binds to it: proceed if already/// theirs; register open-tier when `allow_register` and it's unregistered; error
-/// if it's taken. No-op when the env has no registry (the bind dry-run enforces
+/// Read a node's resolver pointer from the DotNS Registry, or `None` when unset
+/// (the zero address). This is the pointer consumers follow to find the resolver
+/// serving a name, so a subnode with records but no pointer resolves to nothing.
+pub async fn node_resolver(
+    client: &OnlineClient<AssetHubConfig>,
+    env: &Env,
+    name: &str,
+) -> Result<Option<H160>> {
+    ensure_deployed(client, env, &[Contract::Registry]).await?;
+    let node = dotns::namehash(name);
+    let registry = parse_h160(&env.registry)?;
+    let origin = account_id(&build_signer(None, None)?);
+    let data = revive_view(
+        client,
+        origin,
+        registry,
+        0,
+        registrar::encode_resolver(node),
+    )
+    .await?;
+    let resolver = registrar::decode_resolver(&data)?;
+    Ok((resolver.0 != [0u8; 20]).then_some(resolver))
+}
+
+/// Outcome of publishing an executable's subnode records.
+pub struct SubnodeRecords {
+    /// `true` when the on-chain records already matched and nothing was written.
+    pub unchanged: bool,
+}
+
+/// Create `sub_label`.`parent` and point its resolver at the env's content
+/// resolver in **one atomic `Utility.batch_all`**.
+///
+/// The two calls have to land together: `setSubnodeOwner` mints the node with a
+/// zero resolver, and until `setResolver` runs the node's records are
+/// unreachable (consumers ask the Registry which resolver serves a node). They
+/// also cannot be submitted as two independent extrinsics *and* stay atomic, so
+/// `batch_all` is the only shape that leaves no half-configured subnode behind.
+///
+/// Limits: `setSubnodeOwner` is dry-run directly. `setResolver` on a subnode
+/// that does not exist yet reverts in a dry-run (we aren't authorized for a node
+/// with no owner), so when the subnode is absent its limits are measured against
+/// the **parent** node — the same contract and function — and then widened by
+/// the `setSubnodeOwner` measurement to cover writing a fresh storage slot
+/// rather than overwriting an existing one. That bound holds because a fresh
+/// resolver slot is a single address word, strictly smaller than the subnode
+/// record `setSubnodeOwner` itself creates. When the subnode already exists,
+/// both calls are measured exactly. Limits are caps that pallet_revive refunds
+/// down to actual usage, so widening costs nothing.
+///
+/// Idempotent: returns without writing when the subnode is already ours and
+/// already points at the right resolver.
+pub async fn ensure_subnode_with_resolver(
+    client: &OnlineClient<AssetHubConfig>,
+    env: &Env,
+    signer: &Keypair,
+    parent: &str,
+    sub_label: &str,
+) -> Result<(String, SubnodeRecords)> {
+    if sub_label.is_empty() || sub_label.contains('.') {
+        bail!("sub-label '{sub_label}' must be a single label (no dots)");
+    }
+    ensure_deployed(
+        client,
+        env,
+        &[Contract::Registry, Contract::ContentResolver],
+    )
+    .await?;
+
+    let subnode_name = format!("{sub_label}.{parent}");
+    let registry = parse_h160(&env.registry)?;
+    let want_resolver = parse_h160(&env.dotns_content_resolver)?;
+    let us = revive_address(client, account_id(signer)).await?;
+
+    let existing_owner = name_owner(client, env, &subnode_name).await?;
+    if let Some(owner) = existing_owner {
+        if owner.0 != us.0 {
+            bail!(
+                "{subnode_name} is owned by 0x{} (not you); \
+                 reassign it from the parent or deploy under a name you control",
+                hex::encode(owner.0)
+            );
+        }
+        if node_resolver(client, env, &subnode_name)
+            .await?
+            .map(|r| r.0)
+            == Some(want_resolver.0)
+        {
+            return Ok((subnode_name, SubnodeRecords { unchanged: true }));
+        }
+    }
+
+    let parent_node = dotns::namehash(parent);
+    let parent_label = dotns::strip_tld(parent, &env.tld);
+    let subnode = dotns::namehash(&subnode_name);
+
+    let owner_calldata = registrar::encode_set_subnode_owner(registrar::subnode_record(
+        parent_node,
+        sub_label,
+        parent_label,
+        us,
+    ));
+    let resolver_calldata = registrar::encode_set_resolver(subnode, want_resolver);
+
+    let owner_limits =
+        measure_revive_call(client, signer, registry, 0, owner_calldata.clone()).await?;
+    let resolver_limits = if existing_owner.is_some() {
+        measure_revive_call(client, signer, registry, 0, resolver_calldata.clone()).await?
+    } else {
+        let proxy = measure_revive_call(
+            client,
+            signer,
+            registry,
+            0,
+            registrar::encode_set_resolver(parent_node, want_resolver),
+        )
+        .await?;
+        proxy.plus(&owner_limits)
+    };
+
+    ui::step(format!("create {subnode_name} + set resolver (batch_all)"));
+    let tx = revive_batch_all(
+        client,
+        signer,
+        vec![
+            BatchedCall {
+                dest: registry,
+                value: 0,
+                calldata: owner_calldata,
+                limits: owner_limits,
+            },
+            BatchedCall {
+                dest: registry,
+                value: 0,
+                calldata: resolver_calldata,
+                limits: resolver_limits,
+            },
+        ],
+    )
+    .await?;
+    ui::kv("tx", format!("0x{}", hex::encode(tx)));
+
+    match name_owner(client, env, &subnode_name).await? {
+        Some(owner) if owner.0 == us.0 => {}
+        got => bail!(
+            "subnode created but Registry owner is 0x{} (expected 0x{})",
+            hex::encode(got.map(|g| g.0).unwrap_or_default()),
+            hex::encode(us.0)
+        ),
+    }
+    match node_resolver(client, env, &subnode_name).await? {
+        Some(got) if got.0 == want_resolver.0 => {}
+        got => bail!(
+            "resolver read-back mismatch on {subnode_name}: set 0x{} but chain has 0x{}",
+            hex::encode(want_resolver.0),
+            hex::encode(got.map(|g| g.0).unwrap_or_default())
+        ),
+    }
+
+    Ok((subnode_name, SubnodeRecords { unchanged: false }))
+}
+
+/// Write an executable's `executable` text record and its contenthash to
+/// `name` in **one atomic `Utility.batch_all`**, then verify both by read-back.
+///
+/// The pair describes one executable: a contenthash without its record is
+/// content nothing knows how to run, and a record without its contenthash points
+/// at nothing. Batching them means a consumer never observes one without the
+/// other.
+///
+/// Idempotent: when both records already hold the wanted values nothing is
+/// submitted, so re-running a deploy whose executable didn't change is free.
+/// When either differs, both are written — the end state is identical and the
+/// pair stays atomic.
+pub async fn set_executable_records(
+    client: &OnlineClient<AssetHubConfig>,
+    env: &Env,
+    signer: &Keypair,
+    name: &str,
+    record: &str,
+    cid: &Cid,
+) -> Result<SubnodeRecords> {
+    ensure_deployed(client, env, &[Contract::ContentResolver]).await?;
+    let resolver = parse_h160(&env.dotns_content_resolver)?;
+    let node = dotns::namehash(name);
+    let contenthash = dotns::cid_to_contenthash(cid);
+
+    let record_current = resolve_text(client, env, name, "executable").await?;
+    let content_current = resolve_contenthash(client, env, name).await?;
+    if record_current == record && content_current == contenthash {
+        return Ok(SubnodeRecords { unchanged: true });
+    }
+
+    let text_calldata = dotns::encode_set_text_call(node, "executable", record);
+    let content_calldata = dotns::encode_set_contenthash_call(node, &contenthash);
+    let text_limits =
+        measure_revive_call(client, signer, resolver, 0, text_calldata.clone()).await?;
+    let content_limits =
+        measure_revive_call(client, signer, resolver, 0, content_calldata.clone()).await?;
+
+    ui::step(format!(
+        "set 'executable' + bind {name} → {} (batch_all)",
+        ui::ellipsize(&cid.to_string())
+    ));
+    let tx = revive_batch_all(
+        client,
+        signer,
+        vec![
+            BatchedCall {
+                dest: resolver,
+                value: 0,
+                calldata: text_calldata,
+                limits: text_limits,
+            },
+            BatchedCall {
+                dest: resolver,
+                value: 0,
+                calldata: content_calldata,
+                limits: content_limits,
+            },
+        ],
+    )
+    .await?;
+    ui::kv("tx", format!("0x{}", hex::encode(tx)));
+
+    let onchain_record = resolve_text(client, env, name, "executable").await?;
+    if onchain_record != record {
+        bail!(
+            "read-back mismatch on {name} 'executable': set {record} but chain has {onchain_record}"
+        );
+    }
+    let onchain_content = resolve_contenthash(client, env, name).await?;
+    if onchain_content != contenthash {
+        bail!(
+            "read-back mismatch on {name} contenthash: set 0x{} but chain has 0x{}",
+            hex::encode(&contenthash),
+            hex::encode(&onchain_content)
+        );
+    }
+
+    Ok(SubnodeRecords { unchanged: false })
+}
+
+/// Ensure `signer` owns `name` before a deploy binds to it: proceed if already
+/// theirs; register open-tier when `allow_register` and it's unregistered; error/// if it's taken. No-op when the env has no registry (the bind dry-run enforces
 /// ownership instead).
 pub async fn ensure_domain(
     client: &OnlineClient<AssetHubConfig>,
