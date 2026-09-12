@@ -257,6 +257,7 @@ dotkit asset-hub name subnode create app.myapp.paseo 0xabc… # or an SS58 addre
 ```
 
 - **Owner-only, parent-sovereign.** Only the **parent** name's owner can create subnodes under it (dotkit pre-checks ownership); the call **overwrites** any existing owner of that subnode. No commit/reveal, no PoP tier, no fee beyond gas.
+- **The `setSubnodeOwner` ABI generation is detected per chain.** DotNS v0.7 added `persist` to the record, moving the selector; environments upgrade separately (2026-09-12: paseo-next-v2 on v0.7, PreviewNet on v0.6). dotkit dry-runs both shapes and uses the one the Registry implements, so subnode creation and executable publishing work on either generation with no flag. A "reverted with no reason returned" on a subnode write means neither known shape matched — that needs a dotkit update, not a retry.
 - **No pricing/NFT.** A subnode is not an ERC721 name (no `register`/`transfer`/`publish` NFT semantics) — it's a directly-owned Registry node. Bind its records with the normal `name content set` / `name text set` afterward.
 - **Base names only** still applies to registration and Browse: `register` mints top-level `<label>.<tld>` names, and the **Publisher** rejects subnodes — you can bind/resolve a subnode's records but you can't `publish` it to Browse.
 

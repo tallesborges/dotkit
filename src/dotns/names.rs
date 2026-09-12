@@ -9,8 +9,8 @@ use super::resolver as dotns;
 use crate::chain::asset_hub::asset_hub_client;
 use crate::chain::config::{asset_hub, AssetHubConfig};
 use crate::chain::revive::{
-    ensure_mapped, measure_revive_call, parse_h160, revert_reason, revive_address,
-    revive_batch_all, revive_call, revive_view, BatchedCall,
+    ensure_mapped, measure_revive_call, parse_h160, probe_revive_call, revert_reason,
+    revive_address, revive_batch_all, revive_call, revive_view, BatchedCall, ProbeOutcome,
 };
 use crate::chain::signer::{account_id, build_signer};
 use crate::dotns::deployment::{ensure_deployed, Contract};
@@ -292,6 +292,54 @@ pub struct SubnodeOutcome {
     pub tx: [u8; 32],
 }
 
+/// Detect which `setSubnodeOwner` tuple this chain's Registry implements, by
+/// dry-running the real call under each generation and keeping the one the
+/// contract actually dispatches.
+///
+/// A selector that matches no function falls through to the contract's fallback
+/// and reverts with **empty** returndata, so "empty revert" means *wrong
+/// generation* and anything else — a success, or a decodable custom error such
+/// as `NotAuthorised()` — means the tuple was decoded and executed. That is the
+/// only signal available: the Registry exposes no version call, and both
+/// generations sit at the same CREATE3 address.
+///
+/// [`registrar::SubnodeAbi::Persist`] (DotNS ≥ v0.7) is tried first because it
+/// is where environments are heading; measured 2026-09-12, paseo-next-v2 is
+/// `Persist` and PreviewNet is still `Legacy`. Nothing is submitted.
+pub async fn detect_subnode_abi(
+    client: &OnlineClient<AssetHubConfig>,
+    origin: AccountId32,
+    registry: H160,
+    parent_node: [u8; 32],
+    sub_label: &str,
+    parent_label: &str,
+    owner: H160,
+) -> Result<registrar::SubnodeAbi> {
+    let mut empty_revert = false;
+    for abi in [
+        registrar::SubnodeAbi::Persist,
+        registrar::SubnodeAbi::Legacy,
+    ] {
+        let calldata =
+            registrar::encode_set_subnode_owner(abi, parent_node, sub_label, parent_label, owner);
+        match probe_revive_call(client, origin, registry, 0, calldata).await? {
+            ProbeOutcome::Returned => return Ok(abi),
+            ProbeOutcome::Reverted(data) if data.is_empty() => empty_revert = true,
+            ProbeOutcome::Reverted(_) => return Ok(abi),
+        }
+    }
+
+    if empty_revert {
+        bail!(
+            "the DotNS Registry at {registry:?} implements neither known setSubnodeOwner tuple \
+             (both dry-runs reverted with no reason).\n  dotkit knows the DotNS v0.6 \
+             `(bytes32,string,string,address)` and v0.7 `(bytes32,string,string,address,bool)` \
+             shapes; a newer generation needs a dotkit update."
+        )
+    }
+    bail!("could not determine the DotNS subnode ABI at {registry:?}")
+}
+
 /// Create (or reassign) the subnode `sub_label`.`parent` on the DotNS Registry
 /// and assign it to `owner_arg` (a `0x` H160 or SS58 address, defaulting to the
 /// signer). `parent` must be a normalized full parent name (with the env TLD).
@@ -346,12 +394,22 @@ pub async fn create_subnode(
         "create {subnode_name} → 0x{}",
         hex::encode(owner.0)
     ));
-    let calldata = registrar::encode_set_subnode_owner(registrar::subnode_record(
+    let calldata = registrar::encode_set_subnode_owner(
+        detect_subnode_abi(
+            &client,
+            origin,
+            registry,
+            parent_node,
+            sub_label,
+            parent_label,
+            owner,
+        )
+        .await?,
         parent_node,
         sub_label,
         parent_label,
         owner,
-    ));
+    );
     let tx = revive_call(&client, signer, registry, 0, calldata).await?;
     ui::kv("tx", format!("0x{}", hex::encode(tx)));
 
@@ -477,12 +535,22 @@ pub async fn ensure_subnode_with_resolver(
     let parent_label = dotns::strip_tld(parent, &env.tld);
     let subnode = dotns::namehash(&subnode_name);
 
-    let owner_calldata = registrar::encode_set_subnode_owner(registrar::subnode_record(
+    let owner_calldata = registrar::encode_set_subnode_owner(
+        detect_subnode_abi(
+            client,
+            account_id(signer),
+            registry,
+            parent_node,
+            sub_label,
+            parent_label,
+            us,
+        )
+        .await?,
         parent_node,
         sub_label,
         parent_label,
         us,
-    ));
+    );
     let resolver_calldata = registrar::encode_set_resolver(subnode, want_resolver);
 
     let owner_limits =
@@ -942,4 +1010,49 @@ pub async fn register_name(env: &Env, signer: &Keypair, name: &str) -> Result<(H
     }
 
     Ok((owner, value_native))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain::signer::build_signer;
+
+    /// Live check that subnode-ABI detection tracks each environment's DotNS
+    /// generation. Ignored by default: it dials both public testnets. Read-only
+    /// (dry-runs only), so it is safe to run on demand:
+    ///   cargo test --locked -- --ignored detects_the_live_subnode_abi
+    ///
+    /// Measured 2026-09-12: paseo-next-v2 runs DotNS v0.7 (`Persist`) and
+    /// PreviewNet still runs v0.6 (`Legacy`). When an env upgrades, this test
+    /// flips to the new generation on its own — a failure here means detection
+    /// broke, not that the chain moved.
+    #[tokio::test]
+    #[ignore]
+    async fn detects_the_live_subnode_abi() {
+        for (env_id, want) in [
+            ("paseo-next-v2", registrar::SubnodeAbi::Persist),
+            ("preview", registrar::SubnodeAbi::Legacy),
+        ] {
+            let env = Env::resolve(env_id).unwrap();
+            let client = asset_hub_client(&env).await.unwrap();
+            let signer = build_signer(None, None).unwrap();
+            let origin = account_id(&signer);
+            let us = revive_address(&client, origin).await.unwrap();
+            let parent = format!("probeparent.{}", env.tld);
+
+            let got = detect_subnode_abi(
+                &client,
+                origin,
+                parse_h160(&env.registry).unwrap(),
+                dotns::namehash(&parent),
+                "probe",
+                "probeparent",
+                us,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(got, want, "{env_id} subnode ABI");
+        }
+    }
 }

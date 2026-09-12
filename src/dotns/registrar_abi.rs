@@ -25,6 +25,12 @@
 //!   returns the same value as `DotnsCostModelRegistry.currentVersion()` —
 //!   verified live on paseo-next-v2, 2026-09-04). The payable `register` is
 //!   charged the *price*, not the ceiling.
+//! - **Subnode ABI generation (DotNS v0.7.0, 2026-09-11)**: `SubnodeRecord`
+//!   gained `bool persist`, moving `setSubnodeOwner` from `0xbef42f3c` to
+//!   `0xd2cf684d`. Both generations are live on environments we target, so the
+//!   shape is *detected*, never assumed — see [`SubnodeAbi`]. Sending the wrong
+//!   tuple matches no function and reverts with empty returndata, which reads
+//!   exactly like a codeless address.
 
 use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_sol_types::{sol, SolCall};
@@ -81,6 +87,44 @@ sol! {
     }
 
     function personhoodStatus(address account, bytes32 context) external view returns (PersonhoodInfo);
+}
+
+/// DotNS v0.7 widened `SubnodeRecord` with a `persist` flag, which moved
+/// `setSubnodeOwner`'s selector. Kept in its own `sol!` block so both
+/// generations keep readable, unambiguous call types instead of the overload
+/// suffixes a single block would generate.
+mod persist_abi {
+    alloy_sol_types::sol! {
+        struct SubnodeRecordPersist {
+            bytes32 parentNode;
+            string subLabel;
+            string parentLabel;
+            address owner;
+            bool persist;
+        }
+
+        function setSubnodeOwner(SubnodeRecordPersist record) external returns (bytes32 subnode);
+    }
+}
+
+use persist_abi::{setSubnodeOwnerCall as setSubnodeOwnerPersistCall, SubnodeRecordPersist};
+
+/// Which `setSubnodeOwner` tuple a chain's DotNS Registry accepts.
+///
+/// The two generations are both live: `SubnodeRecord` gained `bool persist` in
+/// DotNS v0.7.0, moving the selector from `0xbef42f3c` to `0xd2cf684d`. Sending
+/// the wrong one matches no function at all, so the call reverts with **empty**
+/// returndata and no usable reason — which is exactly what a chain looks like
+/// when it has no code at the address. Measured live 2026-09-12: paseo-next-v2
+/// is [`SubnodeAbi::Persist`], PreviewNet is still [`SubnodeAbi::Legacy`].
+/// Detected per connection rather than pinned per env, because an environment
+/// flips generation on its own schedule (see [`super::names::detect_subnode_abi`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubnodeAbi {
+    /// DotNS ≤ v0.6: `setSubnodeOwner((bytes32,string,string,address))`.
+    Legacy,
+    /// DotNS ≥ v0.7: `setSubnodeOwner((bytes32,string,string,address,bool))`.
+    Persist,
 }
 
 fn to_address(h: H160) -> Address {
@@ -233,27 +277,47 @@ pub fn encode_set_resolver(node: [u8; 32], resolver: H160) -> Vec<u8> {
     .abi_encode()
 }
 
-/// Build the `SubnodeRecord` tuple for `setSubnodeOwner`. `parent_node` is the/// namehash of the full parent name (with TLD); `parent_label` is that name with
-/// the TLD stripped (e.g. `myapp` or `child.myapp`), and its namehash must match
-/// `parent_node` or the contract reverts `ParentLabelMismatch`. `sub_label` is a
-/// single canonical label (no dots).
-pub fn subnode_record(
+/// ABI-encode `setSubnodeOwner` for the generation `abi` names, from the parts
+/// of the record.
+///
+/// `parent_node` is the namehash of the full parent name (with TLD);
+/// `parent_label` is that name with the TLD stripped (e.g. `myapp` or
+/// `child.myapp`), and its namehash must match `parent_node` or the contract
+/// reverts `ParentLabelMismatch`. `sub_label` is a single canonical label (no
+/// dots).
+///
+/// [`SubnodeAbi::Persist`] passes `persist: false`: the flag asks the Registry
+/// to index the subnode into the owner's `LabelStore`, which is restricted to
+/// protocol store writers, so a name owner setting it gets a revert instead of
+/// a subnode. Ownership and the resolver record are written either way.
+pub fn encode_set_subnode_owner(
+    abi: SubnodeAbi,
     parent_node: [u8; 32],
     sub_label: &str,
     parent_label: &str,
     owner: H160,
-) -> SubnodeRecord {
-    SubnodeRecord {
-        parentNode: FixedBytes::from(parent_node),
-        subLabel: sub_label.to_string(),
-        parentLabel: parent_label.to_string(),
-        owner: to_address(owner),
+) -> Vec<u8> {
+    match abi {
+        SubnodeAbi::Legacy => setSubnodeOwnerCall {
+            record: SubnodeRecord {
+                parentNode: FixedBytes::from(parent_node),
+                subLabel: sub_label.to_string(),
+                parentLabel: parent_label.to_string(),
+                owner: to_address(owner),
+            },
+        }
+        .abi_encode(),
+        SubnodeAbi::Persist => setSubnodeOwnerPersistCall {
+            record: SubnodeRecordPersist {
+                parentNode: FixedBytes::from(parent_node),
+                subLabel: sub_label.to_string(),
+                parentLabel: parent_label.to_string(),
+                owner: to_address(owner),
+                persist: false,
+            },
+        }
+        .abi_encode(),
     }
-}
-
-/// ABI-encode `setSubnodeOwner(SubnodeRecord)` on the DotNS Registry.
-pub fn encode_set_subnode_owner(record: SubnodeRecord) -> Vec<u8> {
-    setSubnodeOwnerCall { record }.abi_encode()
 }
 
 /// The ERC721 tokenId of a name is `uint256(namehash(name))` — the same node
@@ -416,7 +480,15 @@ mod tests {
         assert_eq!(hex::encode(minCommitmentAgeCall::SELECTOR), "8d839ffe");
         assert_eq!(hex::encode(registerCall::SELECTOR), "4e47e64b");
         assert_eq!(hex::encode(ownerCall::SELECTOR), "02571be3");
+        // Both subnode generations, verified live 2026-09-12 by dry-running each
+        // against the Registry: on paseo-next-v2 `bef42f3c` returns an empty
+        // revert and `d2cf684d` reverts `NotAuthorised()` (0x1648fd01); on
+        // PreviewNet the two swap places.
         assert_eq!(hex::encode(setSubnodeOwnerCall::SELECTOR), "bef42f3c");
+        assert_eq!(
+            hex::encode(setSubnodeOwnerPersistCall::SELECTOR),
+            "d2cf684d"
+        );
         // Standard ENS resolver-pointer selectors on the Registry. Both verified
         // live on paseo-next-v2 (2026-09-10): `resolver(namehash("app.jollity.paseo"))`
         // returns the env's DotnsContentResolver.
@@ -480,5 +552,62 @@ mod tests {
         let data = hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
             .unwrap();
         assert_eq!(decode_resolver(&data).unwrap().0, [0u8; 20]);
+    }
+
+    /// Golden vectors: the exact calldata dry-run against both live Registries
+    /// on 2026-09-12 for `probe.jollity.paseo`. paseo-next-v2 accepted only the
+    /// `Persist` bytes (reverting `NotAuthorised()`, i.e. the tuple decoded and
+    /// execution reached the ownership check) and matched no function for the
+    /// `Legacy` bytes; PreviewNet did the reverse. Changing either encoding
+    /// silently produces a call no contract implements, so assert the bytes.
+    #[test]
+    fn set_subnode_owner_matches_live_calldata() {
+        let parent_node = <[u8; 32]>::try_from(
+            hex::decode("4a5154b86b7eb593b7af0c96fccbc452348605ebc91cdd8226bfd3947b45b91c")
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        let owner = H160(
+            <[u8; 20]>::try_from(
+                hex::decode("35cdb23ff7fc86e8dccd577ca309bfea9c978d20")
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap(),
+        );
+
+        let legacy =
+            encode_set_subnode_owner(SubnodeAbi::Legacy, parent_node, "probe", "jollity", owner);
+        assert_eq!(
+            hex::encode(legacy),
+            "bef42f3c\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             4a5154b86b7eb593b7af0c96fccbc452348605ebc91cdd8226bfd3947b45b91c\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             00000000000000000000000000000000000000000000000000000000000000c0\
+             00000000000000000000000035cdb23ff7fc86e8dccd577ca309bfea9c978d20\
+             0000000000000000000000000000000000000000000000000000000000000005\
+             70726f6265000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000007\
+             6a6f6c6c69747900000000000000000000000000000000000000000000000000"
+        );
+
+        let persist =
+            encode_set_subnode_owner(SubnodeAbi::Persist, parent_node, "probe", "jollity", owner);
+        assert_eq!(
+            hex::encode(persist),
+            "d2cf684d\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             4a5154b86b7eb593b7af0c96fccbc452348605ebc91cdd8226bfd3947b45b91c\
+             00000000000000000000000000000000000000000000000000000000000000a0\
+             00000000000000000000000000000000000000000000000000000000000000e0\
+             00000000000000000000000035cdb23ff7fc86e8dccd577ca309bfea9c978d20\
+             0000000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000005\
+             70726f6265000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000007\
+             6a6f6c6c69747900000000000000000000000000000000000000000000000000"
+        );
     }
 }

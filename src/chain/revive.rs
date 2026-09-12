@@ -182,6 +182,47 @@ pub async fn revive_view(
     Ok(exec.data)
 }
 
+/// Outcome of a dry-run that tolerates reverts, for callers that need to *read*
+/// a revert instead of failing on it. See [`probe_revive_call`].
+pub enum ProbeOutcome {
+    /// The call executed without reverting.
+    Returned,
+    /// The call reverted; carries its (possibly empty) returndata.
+    Reverted(Vec<u8>),
+}
+
+/// Read-only `ReviveApi.call` dry-run that reports a revert rather than
+/// rejecting it. Nothing is submitted.
+///
+/// [`revive_view`] and [`measure_revive_call`] both turn a revert into an error,
+/// which is right for every call dotkit actually wants to make. Probing *which*
+/// ABI a contract implements is the exception: a call whose selector matches no
+/// function reverts with empty returndata, and that emptiness is the signal.
+pub async fn probe_revive_call(
+    client: &OnlineClient<AssetHubConfig>,
+    origin: AccountId32,
+    dest: H160,
+    value: u128,
+    calldata: Vec<u8>,
+) -> Result<ProbeOutcome> {
+    let call = asset_hub::runtime_apis()
+        .revive_api()
+        .call(origin, dest, value, None, None, calldata);
+    let outcome = client
+        .at_current_block()
+        .await?
+        .runtime_apis()
+        .call(call)
+        .await
+        .context("ReviveApi.call dry-run failed")?;
+
+    match outcome.result {
+        Ok(exec) if exec.flags.bits & 1 != 0 => Ok(ProbeOutcome::Reverted(exec.data)),
+        Ok(_) => Ok(ProbeOutcome::Returned),
+        Err(err) => bail!("contract call failed on chain: {err:?}"),
+    }
+}
+
 /// Plancks a [`StorageDeposit`] charges, treating a refund as zero.
 fn charge_amount(
     deposit: &asset_hub::runtime_types::pallet_revive::primitives::StorageDeposit<u128>,

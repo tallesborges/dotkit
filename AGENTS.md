@@ -97,6 +97,18 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
   whose resolver is the zero address; records written straight to the content resolver
   are then unreachable, because consumers ask the Registry which resolver serves a node.
   A registered base name already has the pointer (the registrar sets it), subnodes do not.
+- **`setSubnodeOwner` has two live ABI generations, so it is detected, never assumed.**
+  DotNS v0.7.0 (2026-09-11) added `bool persist` to `SubnodeRecord`, moving the selector
+  from `0xbef42f3c` to `0xd2cf684d`; environments upgrade on their own schedule
+  (measured 2026-09-12: paseo-next-v2 is v0.7, PreviewNet still v0.6). Sending the wrong
+  tuple matches no function, so the call reverts with **empty returndata** and reads
+  exactly like a codeless address — the failure names nothing. `dotns::names::detect_subnode_abi`
+  dry-runs the real call under each shape and keeps the one the contract dispatches
+  (empty revert = wrong generation; a success or any decodable error = right one).
+  `persist` is always `false`: `LabelStore` indexing is restricted to protocol store
+  writers. Don't pin a generation per env, and re-verify with
+  `cargo test --locked -- --ignored detects_the_live_subnode_abi` (read-only, dials both
+  testnets) when subnode writes start failing.
 - **Executable writes go out as two atomic `Utility.batch_all` groups** —
   `setSubnodeOwner` + `setResolver`, then `setText("executable")` + `setContenthash` — so
   no consumer can observe a subnode without a resolver, or content without the record
