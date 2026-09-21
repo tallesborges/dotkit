@@ -14,4 +14,4 @@ pub use names::{
     name_price_native, register_name, resolve_contenthash, resolve_text, set_contenthash,
     set_executable_records, set_text, tier_name, transfer_name,
 };
-pub use resolver::{contenthash_to_cid, normalize_name, strip_tld};
+pub use resolver::{contenthash_to_cid, normalize_name, product_label, strip_tld};

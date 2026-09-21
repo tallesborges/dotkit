@@ -105,6 +105,18 @@ pub fn strip_tld<'a>(name: &'a str, tld: &str) -> &'a str {
     name.strip_suffix(&format!(".{tld}")).unwrap_or(name)
 }
 
+/// The label identifying the *product* a name belongs to: the segment directly
+/// before the TLD.
+///
+/// For a base name this is the same as [`strip_tld`], but a modality subname is
+/// not its own product — `worker.demoapp.paseo` is `demoapp`'s worker. Reading
+/// the first segment there would name `worker`, which is a real label some
+/// unrelated product could hold.
+pub fn product_label<'a>(name: &'a str, tld: &str) -> &'a str {
+    let base = strip_tld(name, tld);
+    base.rsplit('.').next().unwrap_or(base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +129,18 @@ mod tests {
     #[test]
     fn namehash_empty_is_zero() {
         assert_eq!(namehash(""), [0u8; 32]);
+    }
+
+    /// A modality subname belongs to the product one segment up, not to the
+    /// modality: reading the first segment would name `worker`, a label an
+    /// unrelated product could genuinely hold.
+    #[test]
+    fn product_label_reads_the_segment_before_the_tld() {
+        assert_eq!(product_label("demoapp.paseo", "paseo"), "demoapp");
+        assert_eq!(product_label("worker.demoapp.paseo", "paseo"), "demoapp");
+        assert_eq!(product_label("app.demoapp.paseo", "paseo"), "demoapp");
+        // Already-bare names pass through unchanged.
+        assert_eq!(product_label("demoapp", "paseo"), "demoapp");
     }
 
     #[test]

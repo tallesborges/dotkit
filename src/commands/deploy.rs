@@ -146,7 +146,7 @@ pub async fn run(
         .await?;
         ui::kv("icon", format!("{cid} ({})", product.icon_format()?));
 
-        let manifest = product.root_manifest_json(&cid)?;
+        let manifest = product.root_manifest_json(&cid, dotns::product_label(&domain, &env.tld))?;
         ui::step(format!("set 'manifest' on {domain}"));
         dotns::set_text(&asset_hub, env, &owner, &domain, "manifest", &manifest).await?;
         ui::kv("manifest", ui::ellipsize(&manifest));

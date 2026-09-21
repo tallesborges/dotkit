@@ -171,6 +171,10 @@ display_name = "TV Explorer"
 description = "10,000+ free live TV channels"
 icon = "icon.png"          # path relative to deploy.toml; PNG or JPEG
 
+[product.trusted_products] # optional; cross-product grants, bare labels only
+dim2 = ["context"]         # all | storage | context
+gallery = ["storage"]
+
 [[executables]]            # optional; publishes to app.<domain>
 kind = "app"
 path = "dist/app"
@@ -188,7 +192,14 @@ includes = { chat = true, pocket = false }
 
 Each `[text]` entry is written via `setText` after the bind. The build dir is never scanned for the config (its files get uploaded).
 
-**`[product]` (generated root manifest).** When `[product]` is present, `deploy` uploads the `icon` to Bulletin (single blob, ≤2 MiB, **blake2b-256** multihash — the host's Browse/preimage icon resolver requires it; a sha2-256 icon CID resolves on the IPFS gateway but Browse renders the fallback identicon), builds the RFC root manifest `{"$v":1,"displayName","description","icon":{"cid","format"}}`, and writes it as the base name's `manifest` text record — so Browse shows a name + icon, not just a resolvable contenthash. The app's contenthash stays the SPA entry point; `[product]` alone creates no `app.<name>` subname or `executable` records — add `[[executables]]` for multi-surface app/worker products (see Executables below). `icon.format` is inferred from the extension (`.png`→`png`, `.jpg`/`.jpeg`→`jpeg`); other extensions are rejected. `[product]` **generates** the `manifest` record, so a config that also sets a manual `[text].manifest` is rejected as a conflicting source of truth. Writing the manifest is automatic on deploy; Browse discovery still needs explicit `--publish` (personhood-gated + rate-limited).
+**`[product]` (generated root manifest).** When `[product]` is present, `deploy` uploads the `icon` to Bulletin (single blob, ≤2 MiB, **blake2b-256** multihash — the host's Browse/preimage icon resolver requires it; a sha2-256 icon CID resolves on the IPFS gateway but Browse renders the fallback identicon), builds the RFC root manifest `{"$v":1,"displayName","description","icon":{"cid","format"},"trustedProducts"?}`, and writes it as the base name's `manifest` text record — so Browse shows a name + icon, not just a resolvable contenthash. The app's contenthash stays the SPA entry point; `[product]` alone creates no `app.<name>` subname or `executable` records — add `[[executables]]` for multi-surface app/worker products (see Executables below). `icon.format` is inferred from the extension (`.png`→`png`, `.jpg`/`.jpeg`→`jpeg`); other extensions are rejected. `[product]` **generates** the `manifest` record, so a config that also sets a manual `[text].manifest` is rejected as a conflicting source of truth. Writing the manifest is automatic on deploy; Browse discovery still needs explicit `--publish` (personhood-gated + rate-limited).
+
+**`[product.trusted_products]` (cross-product grants).** Pre-approves interactions the host would otherwise prompt for. **The grant is issued by the product being accessed, and only in that direction:** an entry in `humanity.paseo`'s manifest says what *that* product may do **to Humanity**, never the reverse, and nothing about who it in turn trusts.
+
+- **Keys are bare labels** — `dim2`, never `dim2.paseo`. The host appends the TLD of the network it resolves against, so a suffixed key resolves to a name that does not exist, grants nothing, and would otherwise deploy green. dotkit rejects one at config load and names the bare label to use. Keys must be lowercase DotNS labels (`a-z`, `0-9`, `-`; no leading/trailing `-`; ≤63 chars).
+- **Values** are `all`, `storage` or `context`; anything else is rejected while parsing. `storage` is a read of the grantor's host-local storage. `context` covers acting as the grantor's account — reading it, the identity behind it, and producing signatures and ring-VRF proofs under its keys — so **a product granted `context` can sign as you**. `all` is a wildcard resolved against the host's mediated-permission set *when the grant is used*, so it also covers permissions defined after publication; enumerate `["storage", "context"]` instead when you don't want that. `["all", "storage"]` normalizes to `["all"]`.
+- **Absence, `{}` and `[]` are equivalent** (prompt as usual) and a product listing itself is ignored, so all of them serialize to a manifest with no `trustedProducts` key — byte-identical to one written before the field existed. Keys and grants are sorted and deduped, so reordering the config never changes the record.
+- **Revocation is not immediate.** Manifests carry no change signal, so hosts re-read them on their own schedule and a removed grant stays in force until they do. Redeploying is not a revocation mechanism.
 
 ## Executables (App + Worker)
 
