@@ -93,6 +93,29 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
   stream-flush dependent and not reproducible even upstream-to-upstream, so don't chase
   them; assert alignment and the budget instead. Verify a change here against the vector,
   never by reasoning about it.
+- **The root `manifest` record is byte-pinned, and field order is part of the record.**
+  `config.rs` serializes `RootManifest` in declaration order (`$v`, `displayName`,
+  `description`, `icon`, `trustedProducts`), so reordering the struct rewrites every
+  product's record. `trustedProducts` is normalized before it is written — a self-listing
+  and empty arrays dropped, keys and grants sorted and deduped, `all` collapsing the rest,
+  and the field **omitted** rather than written as `{}` when nothing survives, which is
+  what keeps a product that issues no grant serializing to the exact bytes it did before
+  the field existed. `Granted`'s variant order *is* the serialized alphabetical order, so
+  the derived `Ord` sorts grants the way a string sort does. The pinned-string tests in
+  `config::tests` are the guard — verify a change against them, not by reasoning about it.
+- **Publish-side manifest validation is strict *because* the host side is lenient.** A
+  host treats a TLD-suffixed `trustedProducts` key and an unrecognized grant as **inert,
+  not invalid**, so `dim2.paseo` deploys green, resolves to a name that does not exist and
+  grants nothing. Don't "align" `ProductConfig::validate_trusted_products` with that
+  tolerance; the asymmetry is the feature, and publishers MUST NOT emit either. The label
+  that drops a self-listing is `dotns::product_label` — the segment **before the TLD**,
+  because `worker.demoapp.paseo` is `demoapp`'s worker and reading the first segment would
+  name `worker`, silently dropping a grant issued to an unrelated product holding that
+  label. Grant semantics belong in `skills/dotkit/SKILL.md`, not here. Known gap:
+  `trustedProducts` is the record's only unbounded field and dotkit enforces no size
+  guard, so an oversized manifest fails at the `setText` write rather than at config load
+  — the dotNS text-record budget is still unmeasured upstream, so don't hardcode a
+  placeholder for it.
 - **A subnode needs its Registry resolver pointer set.** `setSubnodeOwner` mints a node
   whose resolver is the zero address; records written straight to the content resolver
   are then unreachable, because consumers ask the Registry which resolver serves a node.
@@ -135,5 +158,6 @@ default signer is the public dev phrase (its `//Alice` / `//deploy/N` derivation
 ## Skill (keep in sync)
 
 - The agent-facing usage doc is `skills/dotkit/SKILL.md` (single source of truth).
-- Update it in the **same change** when the command/flag surface, `--env` set, signer
-  model, naming/PoP rules, or revert wording changes. Match `dotkit --help`.
+- Update it in the **same change** when the command/flag surface, the `deploy.toml`
+  config surface, `--env` set, signer model, naming/PoP rules, or revert wording
+  changes. Match `dotkit --help`.
