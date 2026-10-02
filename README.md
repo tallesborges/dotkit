@@ -85,7 +85,7 @@ dotkit asset-hub name register myapp.paseo
 | `account info` | Show the signer's Asset Hub native (PAS) balance. |
 | `bulletin pool init [--accounts N] [--force] [--skip-authorize]` | Generate a private per-machine Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`), print its `//deploy/N` accounts, and authorize them on-chain (via `//Alice`) in one step. `--skip-authorize` generates the keystore only. Testnet-only. |
 | `bulletin pool status` | Show each pool account's on-chain authorization + quota (txs/bytes used vs allowance) with an `N/M authorized` rollup. Needs a private keystore; `--pool shared` inspects the shared pool instead. |
-| `bulletin pool authorize [--transactions N] [--bytes N]` | Authorize all pool accounts for Bulletin storage in one `utility.batch_all` (signer defaults to `//Alice`). Idempotent — skips already-authorized. |
+| `bulletin pool authorize [--transactions N] [--bytes N]` | Authorize or renew the pool accounts for Bulletin storage, one direct `authorize_account` call per account (signer defaults to the env's `bulletin_authorizer`). Idempotent: skips accounts whose authorization has not expired. |
 
 - `--register` — register the domain first (open, or Lite/Full if the signer is verified) when it isn't already owned.
 - `--config <deploy.toml>` — write text records from a config after the bind, and publish any
@@ -175,7 +175,7 @@ dotkit deploy ./dist myapp.paseo --pool shared
 
 ```sh
 dotkit bulletin pool status      # each account's on-chain authorization + quota (--pool shared for the shared pool)
-dotkit bulletin pool authorize   # (re)authorize accounts — idempotent; only needed after --skip-authorize or to raise allowances
+dotkit bulletin pool authorize   # (re)authorize accounts — idempotent; needed after --skip-authorize or when status shows ✗ EXPIRED
 ```
 
 Every upload prints a one-line note of the account it picked (e.g. `signer: private //deploy/3 (…)`), suppressed under `--quiet`/`--json`.

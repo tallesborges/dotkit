@@ -87,6 +87,16 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
   debited from the Authorizer's own budget — oversized ones fail
   `InsufficientAuthorizerBudget`, so defaults stay at 1000 txs / 100 MB, matching
   `paritytech/bulletin-deploy`.
+- **Expired pool grants are renewed, never replaced.** Grants carry an expiry block, and
+  an expired one still shows on-chain but no longer covers stores, so uploads stop with
+  `no usable Bulletin upload account`. Check with `dotkit --env <id> bulletin pool status`
+  (it reads the chain and flags `✗ EXPIRED`), renew with
+  `dotkit --env <id> bulletin pool authorize` (re-grants only missing or expired accounts
+  of the existing keystore, with the defaults above), then rerun `pool status` to read
+  back the new expiry. Never run `pool init --force` (it writes a new mnemonic) or switch
+  to `--pool shared` to get around an expiry. Renewal is a live write signed by the env's
+  Authorizer: run it only with explicit permission (verified on paseo-next-v2,
+  2026-10-02). Read the lifetime from `pool status`; it is not a fixed constant.
 - **Surface real reverts.** All `Revive.call` reverts decode returndata via
   `chain::revive::revert_reason`; show the actual on-chain error, don't hardcode "probably X" hints.
 - **`pallet_revive` writes** need an SS58↔H160 mapping and a successful dry-run first;
