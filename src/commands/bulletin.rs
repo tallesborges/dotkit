@@ -133,10 +133,9 @@ pub async fn run(
     }
 }
 
-/// Resolve the write signer: the caller's mnemonic when supplied, otherwise a
-/// random authorized account from the selected Bulletin pool (the default owner
-/// signer has no Bulletin quota — only pool accounts do).
-pub fn resolve_signer(
+/// The account `bulletin status` reports on without `--address`: the caller's
+/// mnemonic when supplied, otherwise a random account of the selected pool.
+fn status_signer(
     mnemonic: Option<String>,
     derivation_path: Option<String>,
     pool_source: pool::PoolSource,
@@ -144,6 +143,37 @@ pub fn resolve_signer(
     match mnemonic {
         Some(phrase) => chain::build_signer(Some(&phrase), derivation_path.as_deref()),
         None => pool::pool_signer(pool_source),
+    }
+}
+
+/// Acquire the store signer: the caller's mnemonic when supplied, otherwise a
+/// usable account from the selected Bulletin pool (the default owner signer has
+/// no Bulletin quota — only pool accounts do). Either way the account is locked
+/// locally and checked for in-flight transactions from earlier runs.
+pub async fn upload_signer(
+    env: &Env,
+    client: &subxt::OnlineClient<crate::chain::config::BulletinConfig>,
+    mnemonic: Option<String>,
+    derivation_path: Option<String>,
+    pool_source: pool::PoolSource,
+) -> Result<bulletin::UploadSigner> {
+    match mnemonic {
+        Some(phrase) => {
+            let keypair = chain::build_signer(Some(&phrase), derivation_path.as_deref())?;
+            bulletin::acquire_explicit_signer(client, keypair).await
+        }
+        None => bulletin::acquire_pool_signer(client, env, pool_source).await,
+    }
+}
+
+/// Drop the signer's in-flight record when the chain shows it settled. A
+/// failure here only delays reuse of the account, so it is not fatal.
+pub async fn settle_signer(
+    client: &subxt::OnlineClient<crate::chain::config::BulletinConfig>,
+    signer: &bulletin::UploadSigner,
+) {
+    if let Err(err) = signer.settle(client).await {
+        ui::note(format!("could not clear the in-flight record: {err:#}"));
     }
 }
 
@@ -157,7 +187,7 @@ async fn status(
     let account = match address {
         Some(addr) => AccountId32::from_str(&addr)
             .map_err(|e| anyhow::anyhow!("invalid SS58 address: {e}"))?,
-        None => chain::account_id(&resolve_signer(mnemonic, derivation_path, pool_source)?),
+        None => chain::account_id(&status_signer(mnemonic, derivation_path, pool_source)?),
     };
 
     let client = bulletin::bulletin_client(env).await?;
@@ -346,15 +376,22 @@ async fn store(
     let gateway_url = format!("{}/ipfs/{cid}", env.ipfs_gateway);
 
     let client = bulletin::bulletin_client(env).await?;
-    let signer = resolve_signer(mnemonic, derivation_path, pool_source)?;
+    let signer = upload_signer(env, &client, mnemonic, derivation_path, pool_source).await?;
 
-    let (stored, block, index) =
-        match bulletin::store_block(&client, &signer, 0x55, bulletin::Hashing::Sha2_256, &data)
-            .await?
-        {
-            bulletin::StoreOutcome::AlreadyPresent { block, index } => (false, block, index),
-            bulletin::StoreOutcome::Stored { block, index } => (true, block, index),
-        };
+    let (stored, block, index) = match bulletin::store_block(
+        &client,
+        env.bulletin_rpc()?,
+        &signer,
+        0x55,
+        bulletin::Hashing::Sha2_256,
+        &data,
+    )
+    .await?
+    {
+        bulletin::StoreOutcome::AlreadyPresent { block, index } => (false, block, index),
+        bulletin::StoreOutcome::Stored { block, index } => (true, block, index),
+    };
+    settle_signer(&client, &signer).await;
 
     if ui::json() {
         ui::emit(&json!({
@@ -383,10 +420,13 @@ async fn store_car(
     derivation_path: Option<String>,
     pool_source: pool::PoolSource,
 ) -> Result<()> {
-    let signer = resolve_signer(mnemonic, derivation_path, pool_source)?;
     let client = bulletin::bulletin_client(env).await?;
+    let signer = upload_signer(env, &client, mnemonic, derivation_path, pool_source).await?;
     ui::step(format!("upload {path} to Bulletin"));
     let summary = bulletin::store_car_file(env, &client, &path, &signer).await?;
+    ui::step("confirm finalized");
+    bulletin::confirm_finalized(&client, env.bulletin_rpc()?, &summary.content_hashes).await?;
+    settle_signer(&client, &signer).await;
 
     let total = summary.stored + summary.skipped;
     let gateway = format!("{}/ipfs/{}/", env.ipfs_gateway, summary.root);

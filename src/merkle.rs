@@ -6,7 +6,7 @@
 //! vectors). Produces the full block set ready for Bulletin upload — no `ipfs`
 //! binary required.
 
-use crate::bulletin::{content_hash, PreparedBlock};
+use crate::bulletin::{content_hash, Hashing, PreparedBlock};
 use anyhow::{anyhow, bail, Context, Result};
 use ipld_core::cid::{Cid as IpldCid, Version};
 use rust_unixfs::dir::builder::{BufferingTreeBuilder, TreeOptions};
@@ -131,6 +131,7 @@ pub fn merkleize_dir_with(dir: &str, injected: &[(String, Vec<u8>)]) -> Result<M
         let content_hash = content_hash(&data);
         blocks.push(PreparedBlock {
             codec: cid.codec(),
+            hashing: Hashing::Sha2_256,
             data,
             content_hash,
         });

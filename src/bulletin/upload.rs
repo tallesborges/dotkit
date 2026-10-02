@@ -3,19 +3,22 @@
 //! gateway. Shared by `deploy` and `bulletin store-car` so neither command
 //! depends on the other.
 
-use crate::bulletin::storage::{self, PreparedBlock, MAX_TRANSACTION_SIZE};
+use crate::bulletin::signer::UploadSigner;
+use crate::bulletin::storage::{self, Hashing, PreparedBlock, MAX_TRANSACTION_SIZE};
 use crate::chain::config::BulletinConfig;
 use crate::env::Env;
 use crate::ui;
 use anyhow::{bail, Context, Result};
 use subxt::OnlineClient;
-use subxt_signer::sr25519::Keypair;
 
-/// Summary of storing a CAR's blocks on the Bulletin chain.
+/// Summary of storing a CAR's blocks on the Bulletin chain. The blocks are
+/// confirmed at a best block; pass `content_hashes` to
+/// [`storage::confirm_finalized`] before publishing `root`.
 pub struct CarStored {
     pub root: cid::Cid,
     pub stored: usize,
     pub skipped: usize,
+    pub content_hashes: Vec<[u8; 32]>,
 }
 
 /// Read a CARv1 file into its root CID + validated, upload-ready blocks. Verifies
@@ -55,6 +58,7 @@ pub async fn read_car_prepared(path: &str) -> Result<(cid::Cid, Vec<PreparedBloc
         }
         prepared.push(PreparedBlock {
             codec: cid.codec(),
+            hashing: Hashing::Sha2_256,
             data,
             content_hash,
         });
@@ -70,10 +74,10 @@ pub async fn store_prepared_blocks(
     client: &OnlineClient<BulletinConfig>,
     root: cid::Cid,
     prepared: Vec<PreparedBlock>,
-    signer: &Keypair,
+    signer: &UploadSigner,
 ) -> Result<CarStored> {
     let total = prepared.len();
-    let (stored, skipped) = storage::store_car_blocks(
+    let report = storage::store_blocks(
         client,
         env.bulletin_rpc()?,
         signer,
@@ -84,13 +88,15 @@ pub async fn store_prepared_blocks(
             ));
         },
     )
-    .await?;
+    .await;
     ui::progress_clear();
+    let report = report?;
 
     Ok(CarStored {
         root,
-        stored,
-        skipped,
+        stored: report.stored,
+        skipped: report.skipped,
+        content_hashes: prepared.iter().map(|b| b.content_hash).collect(),
     })
 }
 
@@ -101,7 +107,7 @@ pub async fn store_car_file(
     env: &Env,
     client: &OnlineClient<BulletinConfig>,
     path: &str,
-    signer: &Keypair,
+    signer: &UploadSigner,
 ) -> Result<CarStored> {
     let (root, prepared) = read_car_prepared(path).await?;
     store_prepared_blocks(env, client, root, prepared, signer).await

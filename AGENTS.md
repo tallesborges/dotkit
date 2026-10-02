@@ -60,6 +60,22 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
   "fix" it by editing the transaction-extension tuples in `chain/config.rs` — measured
   2026-08-12, that tuple signs correctly on both paseo-next-v2 (17 declared extensions)
   and PreviewNet (18), because encoding is driven by the chain's metadata, not the tuple.
+- **Bulletin stores are mortal, and their nonces outlive the process.** `bulletin::storage`
+  reads the nonce and the era checkpoint from the **same best block**; `ERA_PERIOD` must
+  stay a power of two ≤ 4096, or `Era::mortal` quantizes the phase and the signed
+  checkpoint hash stops matching the birth block the runtime checks. Signed nonce ranges
+  go to `~/.dotkit/inflight/` (fsynced, file and directory) after signing and *before*
+  submission, because a pooled transaction survives dotkit exiting; never drop that
+  ledger or the per-account lock to "unstick" an upload — an account is reusable once the
+  finalized nonce passes the range or the era's expiry block is finalized. A transaction
+  the node accepted but does not include stops the upload by design (`round_verdict`);
+  re-signing behind it only queues more. Over chainHead (`transactionWatch_v1`, which
+  subxt 0.50 uses on these RPCs) the pool reports "already imported" and priority
+  collisions as `Invalid` status *events*, not JSON-RPC errors, so `classify_status_error`
+  must match their text; the wording lives in polkadot-sdk
+  `rpc-spec-v2/src/transaction/error.rs`. Verify era changes with
+  `cargo test --locked -- --ignored mortal_store_validates_live` (read-only
+  `validate_transaction`, nothing submitted; passed on paseo-next-v2 2026-10-02).
 - **Bulletin authorization is env-specific and must never be batched.** The Authorizer
   lives in `TransactionStorage.AllowedAuthorizers` and differs per env — `//Alice` on
   paseo-next-v2, `//Eve` on PreviewNet (where `//Alice` is rejected `BadSigner`) — so it

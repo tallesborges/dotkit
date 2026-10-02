@@ -48,6 +48,7 @@ pub fn emit(value: &serde_json::Value) {
 
 const STEP: Style = AnsiColor::Cyan.on_default().bold();
 const OK: Style = AnsiColor::Green.on_default().bold();
+const WARN: Style = AnsiColor::Yellow.on_default().bold();
 const ERR: Style = AnsiColor::Red.on_default().bold();
 const BOLD: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
@@ -83,6 +84,14 @@ pub fn note(msg: impl Display) {
         return;
     }
     anstream::println!("  {DIM}{msg}{DIM:#}");
+}
+
+/// A yellow `!` warning on stderr, so it stays visible when stdout is piped.
+pub fn warn(msg: impl Display) {
+    if quiet() {
+        return;
+    }
+    anstream::eprintln!("{WARN}!{WARN:#} {msg}");
 }
 
 /// Rewrite an in-place progress line on stderr (no-op when stderr is not a TTY,

@@ -60,9 +60,12 @@ pub async fn run(
 
     ui::step(format!("share {name} ({mime})"));
     let client = bulletin::bulletin_client(env).await?;
-    let signer = super::bulletin::resolve_signer(mnemonic, derivation_path, pool_source)?;
+    let signer =
+        super::bulletin::upload_signer(env, &client, mnemonic, derivation_path, pool_source)
+            .await?;
     let (stored, block, index) = match bulletin::store_block(
         &client,
+        env.bulletin_rpc()?,
         &signer,
         0x55,
         bulletin::Hashing::Sha2_256,
@@ -73,6 +76,7 @@ pub async fn run(
         bulletin::StoreOutcome::AlreadyPresent { block, index } => (false, block, index),
         bulletin::StoreOutcome::Stored { block, index } => (true, block, index),
     };
+    super::bulletin::settle_signer(&client, &signer).await;
 
     if ui::json() {
         ui::emit(&json!({

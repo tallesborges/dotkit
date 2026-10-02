@@ -49,7 +49,7 @@
 //! per-chunk block model — only the split points differ, and the consumer
 //! reassembles the byte stream regardless.
 
-use crate::bulletin::{content_hash, PreparedBlock, MAX_TRANSACTION_SIZE};
+use crate::bulletin::{content_hash, Hashing, PreparedBlock, MAX_TRANSACTION_SIZE};
 use anyhow::{bail, Context, Result};
 use cid::multihash::Multihash;
 use cid::Cid;
@@ -297,6 +297,7 @@ pub fn chunked_file(car: &[u8]) -> Result<PackagedExecutable> {
         chunk_cids.push((Cid::new_v1(RAW, mh), chunk.len()));
         blocks.push(PreparedBlock {
             codec: RAW,
+            hashing: Hashing::Sha2_256,
             data: chunk.to_vec(),
             content_hash: hash,
         });
@@ -319,6 +320,7 @@ pub fn chunked_file(car: &[u8]) -> Result<PackagedExecutable> {
     );
     blocks.push(PreparedBlock {
         codec: DAG_PB,
+        hashing: Hashing::Sha2_256,
         data: root_block,
         content_hash: root_hash,
     });

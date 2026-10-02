@@ -63,7 +63,7 @@ dotkit asset-hub name register myapp.paseo
 
 | Command | What it does |
 |---|---|
-| `deploy <dir> <domain>` | Merkleize → Bulletin upload → bind the DotNS contenthash (the MVP flow). |
+| `deploy <dir> <domain>` | Merkleize → Bulletin upload → wait for finality → bind the DotNS contenthash (the MVP flow). |
 | `bulletin store <file>` | Store a single blob (≤2 MiB) on Bulletin. |
 | `bulletin store-car <file.car>` | Store every block of a CARv1 so its root resolves. |
 | `bulletin status [--address <ss58>]` | Show authorization / quota for an account. |
@@ -84,7 +84,7 @@ dotkit asset-hub name register myapp.paseo
 | `account whoami` | Derive the signer and prove Asset Hub + Bulletin connectivity. |
 | `account info` | Show the signer's Asset Hub native (PAS) balance. |
 | `bulletin pool init [--accounts N] [--force] [--skip-authorize]` | Generate a private per-machine Bulletin upload pool (`~/.dotkit/pool.toml`, `0600`), print its `//deploy/N` accounts, and authorize them on-chain (via `//Alice`) in one step. `--skip-authorize` generates the keystore only. Testnet-only. |
-| `bulletin pool status` | Show each pool account's on-chain authorization + quota (txs/bytes used vs allowance) with an `N/M authorized` rollup. `--pool shared` inspects the shared pool instead. |
+| `bulletin pool status` | Show each pool account's on-chain authorization + quota (txs/bytes used vs allowance) with an `N/M authorized` rollup. Needs a private keystore; `--pool shared` inspects the shared pool instead. |
 | `bulletin pool authorize [--transactions N] [--bytes N]` | Authorize all pool accounts for Bulletin storage in one `utility.batch_all` (signer defaults to `//Alice`). Idempotent — skips already-authorized. |
 
 - `--register` — register the domain first (open, or Lite/Full if the signer is verified) when it isn't already owned.
@@ -98,7 +98,7 @@ dotkit asset-hub name register myapp.paseo
 - `--env <id>` — target environment (default `paseo-next-v2`).
 - `--mnemonic <phrase>` — signer mnemonic. Falls back to `$MNEMONIC`, then `$DOTNS_MNEMONIC`; defaults to a shared dev account on testnets.
 - `--derivation-path <path>` — Substrate derivation path (e.g. `//Alice`).
-- `--pool <local|shared>` — which Bulletin upload pool to sign with. Default: the private `~/.dotkit` pool if a keystore exists, else the shared dev pool. See [Bulletin upload pools](#bulletin-upload-pools).
+- `--pool <local|shared>` — which Bulletin upload pool to sign with. Default: the private `~/.dotkit` pool; without a keystore the command stops. `shared` is an explicit opt-in for tests. See [Bulletin upload pools](#bulletin-upload-pools).
 - `-q`, `--quiet` — suppress step/detail output; only errors are printed (useful in CI/scripts).
 - `--json` — emit one machine-readable JSON object per command instead of human output; on failure prints `{"error": …}` to stderr.
 
@@ -140,7 +140,7 @@ addresses are reported in context by the command that needs them.
 
 Uploading blocks to Bulletin is signed by an account from an **upload pool** — a set of `//deploy/N` accounts used round-robin so parallel uploads don't collide on nonces or quota. There are two pools:
 
-- **Shared dev pool** — derived from the well-known public dev phrase (`DEV_PHRASE//deploy/{0..9}`). Pre-funded and Bulletin-authorized on testnets. Zero setup, but **everyone shares it**, so you contend with other users for nonces and quota.
+- **Shared dev pool** — derived from the well-known public dev phrase (`DEV_PHRASE//deploy/{0..9}`). Pre-funded and Bulletin-authorized on testnets. Zero setup, but **everyone shares it**, so you contend with other users for nonces and quota. Use it only for tests, with `--pool shared`.
 - **Private pool** — a per-machine keystore at `~/.dotkit/pool.toml` (`0600`) holding a locally-generated 12-word mnemonic and its own `//deploy/N` accounts. Isolated from other users. **Testnet-only** — the mnemonic is plaintext and holds no mainnet value.
 
 ### Which pool a command uses
@@ -149,11 +149,11 @@ Selection is controlled by the global `--pool` flag:
 
 | `--pool` value | Behavior |
 |---|---|
-| *(omitted — default)* | **Auto:** use the private pool **if** `~/.dotkit/pool.toml` exists, otherwise fall back to the shared dev pool. |
-| `--pool local` | Force the private pool (errors if no keystore — run `pool init` first). |
-| `--pool shared` | Force the shared dev pool, even if a private keystore exists. |
+| *(omitted — default)* | Use the private pool. Without `~/.dotkit/pool.toml` the command stops and tells you to run `pool init`; it never falls back to the shared pool. |
+| `--pool local` | Same, stated explicitly. |
+| `--pool shared` | Use the shared dev pool, even if a private keystore exists. Prints a warning. |
 
-> A private pool is **never created automatically.** Until you run `pool init`, every command signs with the shared dev pool.
+> A private pool is **never created automatically.** Until you run `pool init`, uploads need `--pool shared`.
 
 ### Create and use your own pool
 
@@ -165,11 +165,10 @@ dotkit bulletin pool init
 #   --force             regenerate (new mnemonic) over an existing keystore
 #   --skip-authorize    only generate the keystore; authorize later
 
-# From now on, deploys auto-use your private pool (a keystore now exists):
+# From now on, uploads use your private pool:
 dotkit deploy ./dist myapp.paseo
-# ...or force one explicitly:
-dotkit deploy ./dist myapp.paseo --pool local     # your private pool
-dotkit deploy ./dist myapp.paseo --pool shared    # the shared dev pool
+# Opt into the shared dev pool for a test:
+dotkit deploy ./dist myapp.paseo --pool shared
 ```
 
 `pool init` authorizes the accounts on-chain in the same step, signed by the testnet Authorizer `//Alice` by default (override with `--mnemonic`/`--derivation-path`). Two more commands help you inspect/repair the pool:
@@ -179,7 +178,17 @@ dotkit bulletin pool status      # each account's on-chain authorization + quota
 dotkit bulletin pool authorize   # (re)authorize accounts — idempotent; only needed after --skip-authorize or to raise allowances
 ```
 
-Every signed command prints a one-line note of which pool + account it picked (e.g. `pool: private //deploy/3 (…)` or `pool: shared (…)`), suppressed under `--quiet`/`--json`.
+Every upload prints a one-line note of the account it picked (e.g. `signer: private //deploy/3 (…)`), suppressed under `--quiet`/`--json`.
+
+### Upload safety
+
+- **One local process per account.** Each upload takes an OS lock on its account under `~/.dotkit/locks/`. The OS releases it when the process exits, including on a crash. A second local upload picks another pool account.
+- **Usable accounts only.** A pool account is skipped when its Bulletin authorization is missing, expired, or expires within one transaction era. When no account is usable, the command stops and lists the reason per account. For the private pool it tells you to run `dotkit bulletin pool authorize`. It does not fall back to the shared pool.
+- **Mortal transactions.** Every store transaction is valid for 64 blocks (about 6 minutes), counted from the best block its nonce was read at. A transaction that was not included by then can never be included.
+- **Signed nonces are recorded first.** After a round is signed and before anything is submitted, its nonce range and expiry block are written to `~/.dotkit/inflight/` and flushed to disk. A later run does not sign with that account until the finalized chain shows the nonces used or the expiry block finalized. Releasing the lock does not clear this record, so a crash cannot lead to nonce reuse. A record that cannot be read blocks only its own account and is never deleted by dotkit.
+- **Bounded batches and retries.** Each round signs at most 16 MiB or 256 blocks. Blocks are confirmed by their on-chain content hash, so a block stored by any transaction counts. A round keeps watching while any transaction from the upload can still be included, so a resubmission that the pool rejects or reports as a duplicate does not skip earlier pooled transactions. The upload stops after 5 rounds that store nothing.
+- **Stalls stop the upload.** When the node accepted the transaction with the account's next nonce but no upload is confirmed for 60 seconds, dotkit stops and prints the account, nonces and expiry block instead of signing more behind it. Rerun later: stored blocks are skipped.
+- **Finality before naming.** `deploy` uploads the site, the icon and every executable first, then waits until all of their blocks are in a finalized block. Only then does it write any DotNS record. `store`, `store-car` and `share` also wait for finality before reporting success.
 
 ## How merkleization stays Kubo-compatible
 

@@ -37,8 +37,8 @@ struct Cli {
     #[arg(long, global = true)]
     derivation_path: Option<String>,
 
-    /// Bulletin upload pool: `local` (private ~/.dotkit pool) or `shared` (shared dev-phrase pool).
-    /// Default: local if a keystore exists, else shared.
+    /// Bulletin upload pool: `local` (private ~/.dotkit pool) or `shared` (public dev-phrase
+    /// test pool). Default: local; without a keystore the command stops instead of using shared.
     #[arg(long, global = true, value_enum)]
     pool: Option<PoolArg>,
 

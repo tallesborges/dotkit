@@ -88,9 +88,47 @@ pub async fn run(
     };
     ui::kv("content", content_cid);
 
-    let pool = crate::pool::pool_signer(pool_source)?;
-    ui::step("upload to Bulletin");
+    // Read and package everything bound for Bulletin before uploading any of it,
+    // so a bad icon or executable fails before the first transaction.
+    let icon = match &config.product {
+        Some(product) => {
+            let icon_path = product.icon_path(&config.base_dir);
+            let icon_bytes = std::fs::read(&icon_path)
+                .with_context(|| format!("reading [product] icon {}", icon_path.display()))?;
+            if icon_bytes.len() > bulletin::MAX_TRANSACTION_SIZE {
+                bail!(
+                    "[product] icon {} is {} bytes, exceeding the chain's MaxTransactionSize of {} bytes (2 MiB)",
+                    icon_path.display(),
+                    icon_bytes.len(),
+                    bulletin::MAX_TRANSACTION_SIZE
+                );
+            }
+            let hashing = bulletin::Hashing::Blake2b256;
+            let cid = hashing.cid(0x55, &icon_bytes);
+            Some((
+                product,
+                cid,
+                bulletin::PreparedBlock {
+                    codec: 0x55,
+                    hashing,
+                    content_hash: hashing.content_hash(&icon_bytes),
+                    data: icon_bytes,
+                },
+            ))
+        }
+        None => None,
+    };
+    let mut packaged = Vec::new();
+    for executable in &config.executables {
+        packaged.push(package_executable(executable, &config.base_dir).await?);
+    }
+
+    // Upload everything, then wait for finality. No DotNS record is written
+    // until every block it can reference is stored in a finalized block.
     let client = bulletin::bulletin_client(env).await?;
+    let rpc = env.bulletin_rpc()?;
+    let pool = bulletin::acquire_pool_signer(&client, env, pool_source).await?;
+    ui::step("upload to Bulletin");
     let stored =
         bulletin::store_prepared_blocks(env, &client, content_cid, prepared, &pool).await?;
     ui::kv(
@@ -102,6 +140,43 @@ pub async fn run(
             stored.stored + stored.skipped
         ),
     );
+    let mut required = stored.content_hashes.clone();
+
+    if let Some((product, cid, block)) = &icon {
+        ui::step(format!("upload icon {}", ui::ellipsize(&cid.to_string())));
+        bulletin::store_blocks(
+            &client,
+            rpc,
+            &pool,
+            std::slice::from_ref(block),
+            |_, _, _| {},
+        )
+        .await?;
+        required.push(block.content_hash);
+        ui::kv("icon", format!("{cid} ({})", product.icon_format()?));
+    }
+
+    for executable in &mut packaged {
+        ui::step(format!("upload {} to Bulletin", executable.kind));
+        let blocks = std::mem::take(&mut executable.blocks);
+        let stored =
+            bulletin::store_prepared_blocks(env, &client, executable.root, blocks, &pool).await?;
+        ui::kv(
+            "blocks",
+            format!(
+                "{} stored · {} skipped · {} total",
+                stored.stored,
+                stored.skipped,
+                stored.stored + stored.skipped
+            ),
+        );
+        required.extend(stored.content_hashes);
+    }
+
+    ui::step("confirm finalized");
+    bulletin::confirm_finalized(&client, rpc, &required).await?;
+    super::bulletin::settle_signer(&client, &pool).await;
+    drop(pool);
     ui::kv(
         "gateway",
         format!("{}/ipfs/{content_cid}/", env.ipfs_gateway),
@@ -121,36 +196,12 @@ pub async fn run(
         );
     }
 
-    let mut icon_cid = None;
-    if let Some(product) = &config.product {
-        let icon_path = product.icon_path(&config.base_dir);
-        let icon_bytes = std::fs::read(&icon_path)
-            .with_context(|| format!("reading [product] icon {}", icon_path.display()))?;
-        if icon_bytes.len() > bulletin::MAX_TRANSACTION_SIZE {
-            bail!(
-                "[product] icon {} is {} bytes, exceeding the chain's MaxTransactionSize of {} bytes (2 MiB)",
-                icon_path.display(),
-                icon_bytes.len(),
-                bulletin::MAX_TRANSACTION_SIZE
-            );
-        }
-        let cid = bulletin::Hashing::Blake2b256.cid(0x55, &icon_bytes);
-        ui::step(format!("upload icon {}", ui::ellipsize(&cid.to_string())));
-        bulletin::store_block(
-            &client,
-            &pool,
-            0x55,
-            bulletin::Hashing::Blake2b256,
-            &icon_bytes,
-        )
-        .await?;
-        ui::kv("icon", format!("{cid} ({})", product.icon_format()?));
-
+    let icon_cid = icon.as_ref().map(|(_, cid, _)| *cid);
+    if let (Some(product), Some(cid)) = (&config.product, icon_cid) {
         let manifest = product.root_manifest_json(&cid, dotns::product_label(&domain, &env.tld))?;
         ui::step(format!("set 'manifest' on {domain}"));
         dotns::set_text(&asset_hub, env, &owner, &domain, "manifest", &manifest).await?;
         ui::kv("manifest", ui::ellipsize(&manifest));
-        icon_cid = Some(cid);
     }
 
     for (key, value) in &config.text {
@@ -160,19 +211,8 @@ pub async fn run(
     }
 
     let mut executables = Vec::new();
-    for executable in &config.executables {
-        let published = publish_executable(
-            env,
-            &asset_hub,
-            &client,
-            &owner,
-            &pool,
-            &domain,
-            executable,
-            &config.base_dir,
-        )
-        .await?;
-        executables.push(published);
+    for executable in packaged {
+        executables.push(bind_executable(env, &asset_hub, &owner, &domain, executable).await?);
     }
 
     let mut published = false;
@@ -262,31 +302,28 @@ struct PublishedExecutable {
     unchanged: bool,
 }
 
-/// Publish one executable to `<kind>.<domain>`.
+/// An executable packaged for upload, then bound once its blocks are final.
+struct PackagedExecutable {
+    kind: &'static str,
+    record: String,
+    root: Cid,
+    blocks: Vec<bulletin::PreparedBlock>,
+    car_len: usize,
+    chunks: usize,
+    embedded_manifest: bool,
+}
+
+/// Package one executable for `<kind>.<domain>`.
 ///
 /// Executables use a different content model from the website root: the build
 /// directory's DAG is serialized to a CARv1 archive and that archive is stored
 /// **as a chunked file**, so the bound CID is the archive's file root rather
 /// than a browsable directory (see [`crate::car`]). Only the chunks and the
 /// file root reach Bulletin; the inner directory blocks ride inside the archive.
-///
-/// Chain writes go out as two atomic `Utility.batch_all` groups —
-/// `setSubnodeOwner` + `setResolver`, then `setText("executable")` +
-/// `setContenthash` — so a consumer never sees a subnode with no resolver, or a
-/// contenthash with no record describing how to run it. Both groups are skipped
-/// when the chain already holds the wanted state, which makes re-running a
-/// deploy after a partial failure (or with only one executable changed) cheap.
-#[allow(clippy::too_many_arguments)]
-async fn publish_executable(
-    env: &Env,
-    asset_hub: &subxt::OnlineClient<crate::chain::config::AssetHubConfig>,
-    bulletin: &subxt::OnlineClient<crate::chain::config::BulletinConfig>,
-    owner: &subxt_signer::sr25519::Keypair,
-    pool: &subxt_signer::sr25519::Keypair,
-    domain: &str,
+async fn package_executable(
     executable: &crate::config::ExecutableConfig,
     base_dir: &std::path::Path,
-) -> Result<PublishedExecutable> {
+) -> Result<PackagedExecutable> {
     let kind = executable.label();
     let dir = executable.dir(base_dir);
     let dir_str = dir
@@ -328,43 +365,63 @@ async fn publish_executable(
     );
     ui::kv("content", packaged.root);
 
-    ui::step(format!("upload {kind} to Bulletin"));
-    let stored =
-        bulletin::store_prepared_blocks(env, bulletin, packaged.root, packaged.blocks, pool)
-            .await?;
-    ui::kv(
-        "blocks",
-        format!(
-            "{} stored · {} skipped · {} total",
-            stored.stored,
-            stored.skipped,
-            stored.stored + stored.skipped
-        ),
-    );
+    Ok(PackagedExecutable {
+        kind,
+        record,
+        root: packaged.root,
+        blocks: packaged.blocks,
+        car_len: packaged.car_len,
+        chunks: packaged.chunks,
+        embedded_manifest: executable.embeds_manifest(),
+    })
+}
 
+/// Bind an uploaded executable to `<kind>.<domain>`.
+///
+/// Chain writes go out as two atomic `Utility.batch_all` groups —
+/// `setSubnodeOwner` + `setResolver`, then `setText("executable")` +
+/// `setContenthash` — so a consumer never sees a subnode with no resolver, or a
+/// contenthash with no record describing how to run it. Both groups are skipped
+/// when the chain already holds the wanted state, which makes re-running a
+/// deploy after a partial failure (or with only one executable changed) cheap.
+async fn bind_executable(
+    env: &Env,
+    asset_hub: &subxt::OnlineClient<crate::chain::config::AssetHubConfig>,
+    owner: &subxt_signer::sr25519::Keypair,
+    domain: &str,
+    executable: PackagedExecutable,
+) -> Result<PublishedExecutable> {
+    let kind = executable.kind;
+    ui::step(format!("bind {kind}.{domain}"));
     let (subdomain, subnode) =
         dotns::ensure_subnode_with_resolver(asset_hub, env, owner, domain, kind).await?;
     if subnode.unchanged {
         ui::kv("subnode", format!("{subdomain} · already owned + resolved"));
     }
 
-    let records =
-        dotns::set_executable_records(asset_hub, env, owner, &subdomain, &record, &packaged.root)
-            .await?;
+    let records = dotns::set_executable_records(
+        asset_hub,
+        env,
+        owner,
+        &subdomain,
+        &executable.record,
+        &executable.root,
+    )
+    .await?;
     if records.unchanged {
         ui::kv("records", "unchanged · nothing written");
     } else {
-        ui::kv("executable", ui::ellipsize(&record));
+        ui::kv("executable", ui::ellipsize(&executable.record));
     }
 
     Ok(PublishedExecutable {
         kind,
         domain: subdomain,
-        root: packaged.root,
-        car_len: packaged.car_len,
-        chunks: packaged.chunks,
-        record,
-        embedded_manifest: executable.embeds_manifest(),
+        root: executable.root,
+        car_len: executable.car_len,
+        chunks: executable.chunks,
+        record: executable.record,
+        embedded_manifest: executable.embedded_manifest,
         unchanged: subnode.unchanged && records.unchanged,
     })
 }
