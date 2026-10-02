@@ -123,9 +123,18 @@ use persist_abi::{setSubnodeOwnerCall as setSubnodeOwnerPersistCall, SubnodeReco
 pub enum SubnodeAbi {
     /// DotNS ≤ v0.6: `setSubnodeOwner((bytes32,string,string,address))`.
     Legacy,
-    /// DotNS ≥ v0.7: `setSubnodeOwner((bytes32,string,string,address,bool))`.
+    /// DotNS ≥ v0.7: `setSubnodeOwner((bytes32,string,string,address,bool))`,
+    /// sent with `persist: false` (v0.7 reserved `true` for store writers).
     Persist,
+    /// The same v0.7 tuple sent with `persist: true`. DotNS v0.8.0 inverted the
+    /// rule: `persist: false` is now controller-only (`NotAuthorised()` for a
+    /// name owner) and every other caller must persist. Same selector as
+    /// [`SubnodeAbi::Persist`], so only a dry-run tells them apart.
+    PersistEager,
 }
+
+/// `NotAuthorised()`, the DotNS Registry's authorisation revert.
+pub const NOT_AUTHORISED: [u8; 4] = [0x16, 0x48, 0xfd, 0x01];
 
 fn to_address(h: H160) -> Address {
     Address::from(h.0)
@@ -286,10 +295,12 @@ pub fn encode_set_resolver(node: [u8; 32], resolver: H160) -> Vec<u8> {
 /// reverts `ParentLabelMismatch`. `sub_label` is a single canonical label (no
 /// dots).
 ///
-/// [`SubnodeAbi::Persist`] passes `persist: false`: the flag asks the Registry
-/// to index the subnode into the owner's `LabelStore`, which is restricted to
-/// protocol store writers, so a name owner setting it gets a revert instead of
-/// a subnode. Ownership and the resolver record are written either way.
+/// [`SubnodeAbi::Persist`] passes `persist: false` and
+/// [`SubnodeAbi::PersistEager`] passes `persist: true`. The flag asks the
+/// Registry to index the subnode into the owner's `LabelStore`. Which value a
+/// name owner may send depends on the DotNS generation (v0.7: `false`; v0.8:
+/// `true`), so [`super::names::detect_subnode_abi`] picks it by dry-run.
+/// Ownership and the resolver record are written either way.
 pub fn encode_set_subnode_owner(
     abi: SubnodeAbi,
     parent_node: [u8; 32],
@@ -307,13 +318,13 @@ pub fn encode_set_subnode_owner(
             },
         }
         .abi_encode(),
-        SubnodeAbi::Persist => setSubnodeOwnerPersistCall {
+        SubnodeAbi::Persist | SubnodeAbi::PersistEager => setSubnodeOwnerPersistCall {
             record: SubnodeRecordPersist {
                 parentNode: FixedBytes::from(parent_node),
                 subLabel: sub_label.to_string(),
                 parentLabel: parent_label.to_string(),
                 owner: to_address(owner),
-                persist: false,
+                persist: abi == SubnodeAbi::PersistEager,
             },
         }
         .abi_encode(),
@@ -596,7 +607,7 @@ mod tests {
         let persist =
             encode_set_subnode_owner(SubnodeAbi::Persist, parent_node, "probe", "jollity", owner);
         assert_eq!(
-            hex::encode(persist),
+            hex::encode(&persist),
             "d2cf684d\
              0000000000000000000000000000000000000000000000000000000000000020\
              4a5154b86b7eb593b7af0c96fccbc452348605ebc91cdd8226bfd3947b45b91c\
@@ -609,5 +620,17 @@ mod tests {
              0000000000000000000000000000000000000000000000000000000000000007\
              6a6f6c6c69747900000000000000000000000000000000000000000000000000"
         );
+
+        // DotNS v0.8 name-owner shape: the same bytes with the persist word set.
+        let eager = encode_set_subnode_owner(
+            SubnodeAbi::PersistEager,
+            parent_node,
+            "probe",
+            "jollity",
+            owner,
+        );
+        let mut expected = persist.clone();
+        expected[4 + 5 * 32 + 31] = 1;
+        assert_eq!(eager, expected);
     }
 }

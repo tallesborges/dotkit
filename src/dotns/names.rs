@@ -304,8 +304,15 @@ pub struct SubnodeOutcome {
 /// generations sit at the same CREATE3 address.
 ///
 /// [`registrar::SubnodeAbi::Persist`] (DotNS ≥ v0.7) is tried first because it
-/// is where environments are heading; measured 2026-09-12, paseo-next-v2 is
-/// `Persist` and PreviewNet is still `Legacy`. Nothing is submitted.
+/// is where environments are heading; measured 2026-10-02, both paseo-next-v2
+/// and PreviewNet run DotNS v0.8.0 (v0.6 `Legacy` is kept for older
+/// deployments). When that tuple reverts
+/// `NotAuthorised()`, the same tuple is retried with `persist: true`
+/// ([`registrar::SubnodeAbi::PersistEager`]): DotNS v0.8.0 made `persist: false`
+/// controller-only, so a name owner is refused the v0.7 shape but accepted with
+/// the flag set (paseo-next-v2, measured 2026-09-28). If both are refused the
+/// caller really is unauthorised and `Persist` is returned so the real call
+/// surfaces that revert. Nothing is submitted.
 pub async fn detect_subnode_abi(
     client: &OnlineClient<AssetHubConfig>,
     origin: AccountId32,
@@ -315,29 +322,35 @@ pub async fn detect_subnode_abi(
     parent_label: &str,
     owner: H160,
 ) -> Result<registrar::SubnodeAbi> {
-    let mut empty_revert = false;
-    for abi in [
-        registrar::SubnodeAbi::Persist,
-        registrar::SubnodeAbi::Legacy,
-    ] {
+    let probe = |abi| {
         let calldata =
             registrar::encode_set_subnode_owner(abi, parent_node, sub_label, parent_label, owner);
-        match probe_revive_call(client, origin, registry, 0, calldata).await? {
-            ProbeOutcome::Returned => return Ok(abi),
-            ProbeOutcome::Reverted(data) if data.is_empty() => empty_revert = true,
-            ProbeOutcome::Reverted(_) => return Ok(abi),
-        }
-    }
+        probe_revive_call(client, origin, registry, 0, calldata)
+    };
 
-    if empty_revert {
-        bail!(
+    match probe(registrar::SubnodeAbi::Persist).await? {
+        ProbeOutcome::Returned => return Ok(registrar::SubnodeAbi::Persist),
+        // Empty returndata: the v0.7 tuple matched no function; try the v0.6 one.
+        ProbeOutcome::Reverted(data) if data.is_empty() => {}
+        ProbeOutcome::Reverted(data) if data == registrar::NOT_AUTHORISED => {
+            return Ok(match probe(registrar::SubnodeAbi::PersistEager).await? {
+                ProbeOutcome::Reverted(data) if data == registrar::NOT_AUTHORISED => {
+                    registrar::SubnodeAbi::Persist
+                }
+                _ => registrar::SubnodeAbi::PersistEager,
+            });
+        }
+        ProbeOutcome::Reverted(_) => return Ok(registrar::SubnodeAbi::Persist),
+    }
+    match probe(registrar::SubnodeAbi::Legacy).await? {
+        ProbeOutcome::Reverted(data) if data.is_empty() => bail!(
             "the DotNS Registry at {registry:?} implements neither known setSubnodeOwner tuple \
              (both dry-runs reverted with no reason).\n  dotkit knows the DotNS v0.6 \
              `(bytes32,string,string,address)` and v0.7 `(bytes32,string,string,address,bool)` \
              shapes; a newer generation needs a dotkit update."
-        )
+        ),
+        _ => Ok(registrar::SubnodeAbi::Legacy),
     }
-    bail!("could not determine the DotNS subnode ABI at {registry:?}")
 }
 
 /// Create (or reassign) the subnode `sub_label`.`parent` on the DotNS Registry
@@ -1022,16 +1035,19 @@ mod tests {
     /// (dry-runs only), so it is safe to run on demand:
     ///   cargo test --locked -- --ignored detects_the_live_subnode_abi
     ///
-    /// Measured 2026-09-12: paseo-next-v2 runs DotNS v0.7 (`Persist`) and
-    /// PreviewNet still runs v0.6 (`Legacy`). When an env upgrades, this test
-    /// flips to the new generation on its own — a failure here means detection
-    /// broke, not that the chain moved.
+    /// The probe parent is not owned by the signer, so on DotNS ≥ v0.7 both
+    /// `persist` values revert `NotAuthorised()` and detection keeps `Persist`;
+    /// the owner-only `PersistEager` branch needs an owned parent and is not
+    /// covered here. Measured 2026-10-02: both paseo-next-v2 and PreviewNet
+    /// report `version()` 0.8.0 and give `Persist` (PreviewNet was `Legacy` on
+    /// v0.6 until then). A failure here means detection broke or an env moved
+    /// generation.
     #[tokio::test]
     #[ignore]
     async fn detects_the_live_subnode_abi() {
         for (env_id, want) in [
             ("paseo-next-v2", registrar::SubnodeAbi::Persist),
-            ("preview", registrar::SubnodeAbi::Legacy),
+            ("preview", registrar::SubnodeAbi::Persist),
         ] {
             let env = Env::resolve(env_id).unwrap();
             let client = asset_hub_client(&env).await.unwrap();

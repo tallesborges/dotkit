@@ -139,15 +139,22 @@ storage + DotNS naming on Asset Hub (`pallet_revive`). The first-class command i
 - **`setSubnodeOwner` has two live ABI generations, so it is detected, never assumed.**
   DotNS v0.7.0 (2026-09-11) added `bool persist` to `SubnodeRecord`, moving the selector
   from `0xbef42f3c` to `0xd2cf684d`; environments upgrade on their own schedule
-  (measured 2026-09-12: paseo-next-v2 is v0.7, PreviewNet still v0.6). Sending the wrong
+  (measured 2026-10-02: paseo-next-v2 and PreviewNet both report v0.8.0). Sending the wrong
   tuple matches no function, so the call reverts with **empty returndata** and reads
   exactly like a codeless address — the failure names nothing. `dotns::names::detect_subnode_abi`
   dry-runs the real call under each shape and keeps the one the contract dispatches
   (empty revert = wrong generation; a success or any decodable error = right one).
-  `persist` is always `false`: `LabelStore` indexing is restricted to protocol store
-  writers. Don't pin a generation per env, and re-verify with
+  The allowed `persist` value flipped between generations: v0.7 reserved `true` for
+  protocol store writers, while v0.8.0 (paseo-next-v2, measured 2026-09-28) makes `false`
+  controller-only, so a name owner gets `NotAuthorised()` (`0x1648fd01`) for it. Detection
+  retries a `NotAuthorised` v0.7 tuple with `persist: true` (`SubnodeAbi::PersistEager`)
+  and falls back to `Persist` when both are refused (a truly unauthorised caller). Don't
+  pin a generation or a flag per env, and re-verify with
   `cargo test --locked -- --ignored detects_the_live_subnode_abi` (read-only, dials both
-  testnets) when subnode writes start failing.
+  testnets) when subnode writes start failing. That test probes a parent the signer does
+  not own, so it only reaches `Persist`/`Legacy`; `PersistEager` needs an owned parent
+  (measured 2026-10-02 by dry-run on an owned paseo-next-v2 name: `persist: false`
+  reverts `NotAuthorised()`, `persist: true` returns).
 - **Executable writes go out as two atomic `Utility.batch_all` groups** —
   `setSubnodeOwner` + `setResolver`, then `setText("executable")` + `setContenthash` — so
   no consumer can observe a subnode without a resolver, or content without the record
